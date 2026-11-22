@@ -22,6 +22,7 @@ WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
 SHOW_N = 5      # rows shown in the report
 STORE_N = 10    # rows stored per snapshot (plus me, wherever I am)
 MIN_GAP_S = 600  # ignore a second run within 10 min (duplicate guard)
+MIN_EXP = int(os.environ.get("TRACK_MIN_EXP", "20"))  # flower totals are ~e+25
 VAL_RE = re.compile(r"^(\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z]{0,8})$")
 
 
@@ -33,10 +34,24 @@ def fetch_text():
         b = p.chromium.launch()
         pg = b.new_page(viewport={"width": 430, "height": 1800})
         pg.goto(URL, wait_until="networkidle", timeout=60000)
-        try:
-            pg.get_by_text("Total Flowers").first.click(timeout=10000)
-        except Exception:
-            pass  # may already be the active tab
+        pg.wait_for_timeout(2000)
+        before = pg.inner_text("body")
+        print("--- page text BEFORE click (first 40 lines) ---")
+        print("\n".join(before.splitlines()[:40]))
+        loc = pg.get_by_text("Total Flowers", exact=True)
+        n = loc.count()
+        if n == 0:
+            loc = pg.get_by_text("Total Flowers")
+            n = loc.count()
+        print("tab matches:", n)
+        for i in range(n):
+            try:
+                loc.nth(i).scroll_into_view_if_needed(timeout=3000)
+                loc.nth(i).click(timeout=5000)
+                print("clicked match", i)
+                break
+            except Exception as e:
+                print("click failed", i, str(e).splitlines()[0][:120])
         pg.wait_for_timeout(3000)
         text = ""
         for _ in range(8):  # scroll so lazy rows load until I'm found
@@ -45,6 +60,8 @@ def fetch_text():
                 break
             pg.mouse.wheel(0, 2500)
             pg.wait_for_timeout(1200)
+        print("--- page text AFTER click (first 40 lines) ---")
+        print("\n".join(text.splitlines()[:40]))
         pg.screenshot(path="data/last.png")
         with open("data/last.txt", "w", encoding="utf-8") as f:
             f.write(text)
@@ -55,6 +72,10 @@ def fetch_text():
 def parse_board(text):
     """Rows look like: rank / username / value (e.g. 7.59e+25vg)."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for j, l in enumerate(lines):  # skip anything above the tab strip
+        if l == "Total Flowers":
+            lines = lines[j + 1:]
+            break
     rows = []
     for i, l in enumerate(lines):
         m = VAL_RE.match(l)
@@ -76,11 +97,16 @@ def parse_board(text):
     return rows
 
 
+def exponent(raw):
+    m = re.search(r"[eE]\+?(\d+)", raw)
+    return int(m.group(1)) if m else 0
+
+
 def is_me(name):
     n, me = name.lower(), ME.lower()
     if n == me:
         return True
-    stem = n.rstrip(".â¦ ")
+    stem = n.rstrip(".… ")
     return (n != stem) and len(stem) >= 2 and me.startswith(stem)
 
 
@@ -94,9 +120,9 @@ def connect():
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
     con.executescript("""
-    CREATE TABLE IF NOT EXISTS snapshots(
+    CREATE TABLE IF NOT EXISTS snaps2(
       id INTEGER PRIMARY KEY, ts_utc TEXT, ts_local TEXT, ok INTEGER, error TEXT);
-    CREATE TABLE IF NOT EXISTS rows(
+    CREATE TABLE IF NOT EXISTS rows2(
       snapshot_id INTEGER, rank INTEGER, name TEXT, raw TEXT,
       value REAL, unit TEXT, is_me INTEGER);
     """)
@@ -105,12 +131,12 @@ def connect():
 
 def last_ok(con, n=2):
     return con.execute(
-        "SELECT * FROM snapshots WHERE ok=1 ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        "SELECT * FROM snaps2 WHERE ok=1 ORDER BY id DESC LIMIT ?", (n,)).fetchall()
 
 
 def load_rows(con, sid):
     return {r["name"].lower(): r for r in con.execute(
-        "SELECT * FROM rows WHERE snapshot_id=?", (sid,))}
+        "SELECT * FROM rows2 WHERE snapshot_id=?", (sid,))}
 
 
 def save(con, now_utc, rows):
@@ -118,11 +144,11 @@ def save(con, now_utc, rows):
     me = find_me(rows)
     if me and me not in top:
         top = top + [me]
-    cur = con.execute("INSERT INTO snapshots(ts_utc,ts_local,ok) VALUES(?,?,1)",
+    cur = con.execute("INSERT INTO snaps2(ts_utc,ts_local,ok) VALUES(?,?,1)",
                       (now_utc.isoformat(), now_utc.astimezone(TZ).isoformat()))
     sid = cur.lastrowid
     con.executemany(
-        "INSERT INTO rows VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO rows2 VALUES(?,?,?,?,?,?,?)",
         [(sid, r["rank"], r["name"], r["raw"], r["value"], r["unit"],
           1 if r is me else 0) for r in top])
     con.commit()
@@ -130,7 +156,7 @@ def save(con, now_utc, rows):
 
 
 def save_failure(con, now_utc, err):
-    con.execute("INSERT INTO snapshots(ts_utc,ts_local,ok,error) VALUES(?,?,0,?)",
+    con.execute("INSERT INTO snaps2(ts_utc,ts_local,ok,error) VALUES(?,?,0,?)",
                 (now_utc.isoformat(), now_utc.astimezone(TZ).isoformat(), str(err)[:500]))
     con.commit()
 
@@ -273,6 +299,8 @@ def main():
         rows = parse_board(fetch_text())
         if len(rows) < SHOW_N:
             raise RuntimeError(f"parsed only {len(rows)} leaderboard rows")
+        if exponent(rows[0]["raw"]) < MIN_EXP:
+            raise RuntimeError(f"looks like the wrong board (top value {rows[0]['raw']}); nothing saved")
     except Exception as e:
         save_failure(con, now, e)
         when = (datetime.fromisoformat(prevs[0]["ts_local"]).strftime("%a %H:%M")
