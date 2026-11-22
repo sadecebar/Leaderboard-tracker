@@ -1,0 +1,44 @@
+name: flower-tracker
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flower-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && playwright install --with-deps chromium
+      - name: Check leaderboard and report
+        run: python track.py
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      - name: Save history to the repo
+        if: always()
+        run: |
+          git config user.name "flower-tracker"
+          git config user.email "flower-tracker@users.noreply.github.com"
+          git add data/tracker.db
+          git diff --cached --quiet || (git commit -m "snapshot" && git pull --rebase && git push)
+      - name: Keep debug screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-page
+          path: |
+            data/last.png
+            data/last.txt
+          if-no-files-found: ignore
