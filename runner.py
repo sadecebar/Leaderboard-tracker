@@ -27,7 +27,7 @@ TZ = ZoneInfo("Europe/Stockholm")
 POLL = int(os.environ.get("POLL_SECONDS", "60"))
 RUN_FOR = int(float(os.environ.get("RUN_FOR_SECONDS", str(345 * 60))))
 STOP_AT = datetime.fromisoformat(os.environ["STOP_AT"]) if os.environ.get("STOP_AT") else None
-FILES = ["data/seen_hatches.json", "data/tracker.db"]
+FILES = ["data/seen_hatches.json", track.DB if track else "data/tracker.db"]
 
 if track and os.environ.get("FLOWER_WEBHOOK_URL"):  # optional: flower reports to another channel
     track.WEBHOOK = os.environ["FLOWER_WEBHOOK_URL"]
@@ -101,7 +101,7 @@ def main():
         set_output("done", "true")
         return 0
     start = time.time()
-    last_hour = None
+    last_hour, retry_at, tries = None, None, 0
     while time.time() - start < RUN_FOR:
         t0 = time.time()
         now = datetime.now(TZ)
@@ -112,9 +112,15 @@ def main():
             last_hour = hour_key if not (now.minute < 5 or overdue) else None
         else:
             overdue = False
-        if track and ((now.minute < 5 and hour_key != last_hour) or overdue):
-            last_hour = hour_key
-            safe("flower check", track.main)
+        due_hour = bool(track) and ((now.minute < 5 and hour_key != last_hour) or overdue)
+        due_retry = bool(track) and retry_at is not None and time.time() >= retry_at
+        if due_hour or due_retry:
+            if due_hour:
+                last_hour, tries = hour_key, 0
+            tries += 1
+            last_try = tries >= 3   # a failed check is retried twice (3 min apart) before it is announced
+            rc = safe("flower check", lambda: track.main(quiet_fail=not last_try))
+            retry_at = time.time() + 180 if (rc and not last_try) else None
             save_state("flower snapshot")
         if hatch:
             safe("hatch check", hatch.main)
@@ -123,7 +129,7 @@ def main():
             print("stop time reached - finished")
             if track and track.WEBHOOK:
                 safe("final notice", lambda: track.notify(
-                    "\U0001F3C1 **Flower tracker finished** - the leaderboard has ended. "
+                    f"\U0001F3C1 **{track.TITLE} tracker finished** - the leaderboard has ended. "
                     "All saved history stays in the repo."))
             set_output("done", "true")
             save_state("final state")
