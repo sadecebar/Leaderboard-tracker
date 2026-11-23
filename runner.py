@@ -87,8 +87,15 @@ def flower_overdue():
 
 
 def main():
-    if hatch and hatch.PREVIEW:  # manual "preview" run: one sample alert, then stop
-        return hatch.main()
+    if os.environ.get("PREVIEW", "").lower() == "true":  # manual test run: one check, then stop
+        code = 0
+        if hatch:
+            code = hatch.main()
+        if track:
+            os.environ["FORCE"] = "1"  # ignore the 10-minute duplicate guard
+            code = safe("flower check", track.main)
+            save_state("flower snapshot (preview)")
+        return code
     if STOP_AT and datetime.now(TZ) >= STOP_AT:
         print("stop time already passed - nothing to do")
         set_output("done", "true")
