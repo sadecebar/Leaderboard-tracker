@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" width="1280" height="400" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c1f1a"/>
+      <stop offset="0.6" stop-color="#123329"/>
+      <stop offset="1" stop-color="#0a1512"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#b8ffd9"/>
+      <stop offset="1" stop-color="#ff9ccf"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe08a"/><stop offset="1" stop-color="#d9a22e"/>
+    </linearGradient>
+    <linearGradient id="silver" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eef2f6"/><stop offset="1" stop-color="#9aa6b2"/>
+    </linearGradient>
+    <linearGradient id="bronze" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3b98a"/><stop offset="1" stop-color="#b06a35"/>
+    </linearGradient>
+    <g id="flower">
+      <g fill="#ff8fc4">
+        <ellipse cx="0" cy="-14" rx="8" ry="12"/><ellipse cx="0" cy="14" rx="8" ry="12"/>
+        <ellipse cx="-14" cy="0" rx="12" ry="8"/><ellipse cx="14" cy="0" rx="12" ry="8"/>
+      </g>
+      <circle r="8" fill="#ffd34d"/>
+    </g>
+  </defs>
+  <rect width="1280" height="400" rx="28" fill="url(#bg)"/>
+
+  <!-- rising line chart in the background -->
+  <polyline points="0,360 140,340 260,345 380,300 500,310 620,250 740,265 860,200 980,210 1100,140 1280,90"
+            fill="none" stroke="#3ddc97" stroke-opacity="0.18" stroke-width="6" stroke-linejoin="round"/>
+
+  <text x="80" y="160" font-size="80" font-weight="800" fill="url(#title)">Leaderboard Tracker</text>
+  <text x="84" y="214" font-size="30" fill="#c6eedc">Hourly race reports for Pets Universe leaderboards.</text>
+  <text x="84" y="256" font-size="30" fill="#c6eedc">Who's gaining, who's sleeping, who wins.</text>
+  <g font-size="22" font-weight="700">
+    <rect x="84" y="288" width="170" height="40" rx="20" fill="#fff" fill-opacity="0.07" stroke="#ff8fc4" stroke-opacity="0.6"/>
+    <text x="169" y="315" text-anchor="middle" fill="#ff8fc4">🔥 on fire</text>
+    <rect x="266" y="288" width="180" height="40" rx="20" fill="#fff" fill-opacity="0.07" stroke="#3ddc97" stroke-opacity="0.6"/>
+    <text x="356" y="315" text-anchor="middle" fill="#3ddc97">🚀 surging</text>
+    <rect x="458" y="288" width="176" height="40" rx="20" fill="#fff" fill-opacity="0.07" stroke="#7fd4ff" stroke-opacity="0.6"/>
+    <text x="546" y="315" text-anchor="middle" fill="#7fd4ff">🧊 cooling</text>
+  </g>
+
+  <!-- podium -->
+  <g transform="translate(860 0)">
+    <rect x="0" y="250" width="110" height="110" rx="10" fill="url(#silver)"/>
+    <rect x="120" y="190" width="110" height="170" rx="10" fill="url(#gold)"/>
+    <rect x="240" y="280" width="110" height="80" rx="10" fill="url(#bronze)"/>
+    <g font-size="54" font-weight="800" text-anchor="middle" fill="#1b2a24" fill-opacity="0.75">
+      <text x="55" y="320">2</text><text x="175" y="262">1</text><text x="295" y="340">3</text>
+    </g>
+    <!-- crown -->
+    <path d="M140 160 L146 122 L162 142 L175 112 L188 142 L204 122 L210 160 Z" fill="#ffd34d" stroke="#b8860b" stroke-width="3" stroke-linejoin="round"/>
+    <use href="#flower" x="175" y="96"/>
+    <use href="#flower" x="55" y="214" transform="rotate(0)"/>
+    <use href="#flower" x="295" y="246"/>
+  </g>
+  <use href="#flower" x="780" y="70" opacity="0.7"/>
+  <use href="#flower" x="1230" y="60" opacity="0.5"/>
+</svg>
