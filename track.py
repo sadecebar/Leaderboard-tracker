@@ -295,14 +295,117 @@ def build_report(now_utc, cur_rows, cur_by, prev_row, prev_by, prevprev_by, prev
     return "\n".join(out).strip()
 
 
+MEDALS = {1: "\U0001F947", 2: "\U0001F948", 3: "\U0001F949", 4: "4\uFE0F\u20E3", 5: "5\uFE0F\u20E3"}
+
+
+def sh(v, signed=False):
+    s = f"{v:+.3e}" if signed else f"{v:.3e}"
+    return s.replace("e+", "e")
+
+
+def discord_embed(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
+    local = now_utc.astimezone(TZ)
+    hours = 0
+    if prev_row:
+        hours = (now_utc - datetime.fromisoformat(prev_row["ts_utc"])).total_seconds() / 3600
+    cur_rates = rates(cur_by, prev_by, hours)
+    prev_rates = {}
+    if pp_row and prev_row:
+        h2 = (datetime.fromisoformat(prev_row["ts_utc"])
+              - datetime.fromisoformat(pp_row["ts_utc"])).total_seconds() / 3600
+        prev_rates = rates(prev_by, pp_by, h2)
+    me = find_me(cur_rows)
+    shown = cur_rows[:SHOW_N]
+    if me and me not in shown:
+        shown = shown + [me]
+
+    blocks, spikes = [], []
+    for r in shown:
+        k = r["name"].lower()
+        you = "  \U0001F448 you" if r is me else ""
+        p = prev_by.get(k) if prev_by else None
+        mv = ""
+        if p is not None and p["rank"] != r["rank"]:
+            mv = f"  {'\U0001F53A' if r['rank'] < p['rank'] else '\U0001F53B'}{abs(p['rank'] - r['rank'])}"
+        head = f"{MEDALS.get(r['rank'], '#' + str(r['rank']))} **{r['name']}**{you}{mv}"
+        val = f"{sh(r['value'])} {r['unit']}".strip()
+        gain = ""
+        if k in cur_rates:
+            g, rate, pct = cur_rates[k]
+            arrow = ""
+            pr = prev_rates.get(k)
+            if pr and pr[1] > 0 and rate > 0:
+                if rate >= 2 * pr[1]:
+                    spikes.append(f"\u26A1 **{r['name']}** earning {rate / pr[1]:.1f}x faster than last reading")
+                elif rate > pr[1] * 1.1:
+                    arrow = " \u2191"
+                elif rate < pr[1] * 0.9:
+                    arrow = " \u2193"
+            gain = f"\n*{sh(g, True)}  \u00B7  {sh(rate)}/h{arrow}" + (f"  \u00B7  {pct:+.2f}%*" if pct is not None else "*")
+        blocks.append(f"{head}\n{val}{gain}")
+    desc = "\n\n".join(blocks)
+    if spikes:
+        desc += "\n\n" + "\n".join(spikes)
+
+    color, fields = 0x5865F2, []
+    if not me:
+        fields.append({"name": "\u2753 You", "value": f"{ME} not found on the board", "inline": False})
+    else:
+        ref = cur_rows[0] if me["rank"] != 1 else (cur_rows[1] if len(cur_rows) > 1 else None)
+        if ref and ref["unit"] == me["unit"]:
+            gap = abs(ref["value"] - me["value"])
+            u = me["unit"]
+            lines = []
+            mk, rk = me["name"].lower(), ref["name"].lower()
+            have_rates = mk in cur_rates and rk in cur_rates
+            if me["rank"] != 1:
+                lines.append(f"Gap to #1: **{sh(gap)} {u}**")
+            else:
+                lines.append(f"Lead over #2: **{sh(gap)} {u}**")
+            pm, pr_ = (prev_by.get(mk), prev_by.get(rk)) if prev_by else (None, None)
+            if pm and pr_ and pm["unit"] == pr_["unit"] == u:
+                chg = abs(pr_["value"] - pm["value"]) - gap
+                if me["rank"] != 1:
+                    lines.append(f"Since last check: {'\u2193 closed' if chg > 0 else '\u2191 grew'} {sh(abs(chg))}")
+            if have_rates:
+                diff = cur_rates[mk][1] - cur_rates[rk][1]
+                if me["rank"] != 1:
+                    if diff > 0:
+                        color = 0x57F287
+                        lines.append(f"Closing: **{sh(diff)} {u}/h**")
+                        lines.append(f"Overtake: **~{hm(gap / diff)}** if both rates hold")
+                        verdict = "\u2705 Gaining on #1"
+                    else:
+                        color = 0xED4245
+                        lines.append(f"Falling behind: **{sh(-diff)} {u}/h**")
+                        lines.append(f"Need **+{sh(-diff)} {u}/h** more to match #1")
+                        verdict = "\u26A0\uFE0F Not catching #1"
+                else:
+                    color = 0x57F287 if diff >= 0 else 0xFEE75C
+                    lines.append(f"Lead {'growing' if diff >= 0 else 'shrinking'}: **{sh(abs(diff))} {u}/h**")
+                    verdict = "\U0001F451 You're #1"
+                lines.insert(0, f"**{verdict}**")
+            fields.append({"name": f"\U0001F3AF You: rank #{me['rank']}", "value": "\n".join(lines), "inline": False})
+        elif ref:
+            fields.append({"name": f"\U0001F3AF You: rank #{me['rank']}",
+                           "value": "Units differ from the leader - gap not computed.", "inline": False})
+    if prev_row:
+        foot = f"vs reading {hm(hours)} ago" + ("  \u00B7  \u26A0\uFE0F missed checks" if hours > 1.5 else "")
+    else:
+        foot = "Baseline saved - gains start next check"
+    return {"title": f"\U0001F338 Flower leaderboard  \u00B7  {local:%H:%M}",
+            "description": desc, "color": color, "fields": fields,
+            "footer": {"text": foot}, "timestamp": now_utc.isoformat()}
+
+
 # ---------------------------------------------------------------- notify
-def notify(msg):
+def notify(msg, embed=None):
     print(msg)
     if not WEBHOOK:
         print("[no DISCORD_WEBHOOK_URL set - not sent]")
         return False
-    body = json.dumps({"content": "```\n" + msg[:1900] + "\n```"}).encode()
-    req = urllib.request.Request(WEBHOOK, data=body, headers={
+    payload = {"embeds": [embed]} if embed else {"content": msg[:1900]}
+    req = urllib.request.Request(WEBHOOK, data=json.dumps(payload).encode(), headers={
         "Content-Type": "application/json", "User-Agent": "pu-tracker/1.0"})
     with urllib.request.urlopen(req, timeout=20) as r:
         print("discord status", r.status)
@@ -330,7 +433,7 @@ def main():
         when = (datetime.fromisoformat(prevs[0]["ts_local"]).strftime("%a %H:%M")
                 if prevs else "never")
         try:
-            notify(f"Tracker check FAILED at {now.astimezone(TZ):%H:%M}: {e}\n"
+            notify(f"\u26A0\uFE0F **Tracker check FAILED** at {now.astimezone(TZ):%H:%M}: {e}\n"
                    f"Last good snapshot: {when}. Nothing was invented.")
         except Exception as ne:
             print("notify failed:", ne)
@@ -349,7 +452,8 @@ def main():
     save(con, now, rows)
     msg = build_report(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
     try:
-        notify(msg)
+        embed = discord_embed(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
+        notify(msg, embed)
     except Exception as ne:
         print("notify failed:", ne, file=sys.stderr)
     return 0
