@@ -479,7 +479,7 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
             if r["rank"] == 1 and len(cur_rows) > 1 and cur_rows[1]["unit"] == r["unit"]:
                 d["gap"] = f"**+{sh(r['value'] - cur_rows[1]['value'])}** lead"
             elif r["rank"] > 1:
-                d["gap"] = f"**-{sh(lead['value'] - r['value'])}** to #1"
+                d["gap"] = f"**-{sh(lead['value'] - r['value'])}**"
         if k in cur_rates:
             g, rate, pct = cur_rates[k]
             arrow = ""
@@ -494,8 +494,8 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
                     d["tag"], arrow = "SURGING", " ↑"
                 elif rate < pr[1] * 0.9:
                     d["tag"], arrow = "COOLING", " ↓"
-            d["delta"] = f"{sh(g, True)}  ·  {sh(rate)}/h{arrow}" + (
-                f"  ·  {pct:+.2f}%" if pct is not None else "")
+            d["delta"] = f"{sh(g, True)} \u00B7 {sh(rate)}/h{arrow}" + (
+                f" \u00B7 {pct:+.2f}%" if pct is not None else "")
         players.append(d)
     if hidden > 0 and len(players) > SHOW_N:
         players[SHOW_N]["hidden_before"] = hidden
@@ -648,10 +648,10 @@ def discord_message(now_utc, *args, **kw):
             head += f"  {'\U0001F53A' if p['move'] > 0 else '\U0001F53B'}{abs(p['move'])}"
         if p["tag"]:
             head += f"  ·  {TAGS[p['tag']]}"
-        line2 = f" `{p['value']}`" + (f"  ·  {p['gap']}" if p["gap"] else "")
-        line3 = f" *{p['delta']}*" if p["delta"] else ""
+        line2 = f"`{p['value']}`" + (f" \u00B7 {p['gap']}" if p["gap"] else "")
+        line3 = f"*{p['delta']}*" if p["delta"] else ""
         rows.append("\n".join(x for x in (head, line2, line3) if x))
-    parts = [f"*{d['sub']}*", "", "\n\n".join(rows), "", f"**{d['title']}**", *d["story"]]
+    parts = [f"*{d['sub']}  \u00B7  right = gap to #1*", "", "\n\n".join(rows), "", f"**{d['title']}**", *d["story"]]
     if d["verdict"]:
         parts += ["", "**\U0001F3C1 The endgame**", *d["verdict"]]
     emb = {"title": f"\U0001F338 Flower leaderboard  ·  {d['time']}", "color": d["color"],
@@ -659,7 +659,7 @@ def discord_message(now_utc, *args, **kw):
     try:
         icon = headshots([ME]).get(ME.lower())
         if icon:
-            emb["thumbnail"] = {"url": icon}
+            emb["author"] = {"name": f"{ME} \u00B7 Flower tracker", "icon_url": icon}
     except Exception as e:
         print("thumbnail failed:", e)
     return emb, None
