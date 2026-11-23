@@ -186,29 +186,9 @@ def save_failure(con, now_utc, err):
 
 
 # ---------------------------------------------------------------- maths
-def abbreviate(v, signed=False):
-    units = [
-        (1e33, "Dc"),
-        (1e30, "No"),
-        (1e27, "Oc"),
-        (1e24, "Sp"),
-        (1e21, "Sx"),
-        (1e18, "Qi"),
-        (1e15, "Qa"),
-        (1e12, "T"),
-        (1e9, "B"),
-        (1e6, "M"),
-        (1e3, "K"),
-    ]
-    for threshold, suffix in units:
-        if abs(v) >= threshold:
-            n = v / threshold
-            return f"{n:+.2f}{suffix}" if signed else f"{n:.2f}{suffix}"
-    return f"{v:+.2f}" if signed else f"{v:.2f}"
-
-
 def fnum(v, unit, signed=False):
-    return f"{abbreviate(v, signed)} {unit}".strip()
+    s = f"{v:+.4e}" if signed else f"{v:.4e}"
+    return f"{s} {unit}".strip()
 
 
 def rates(cur, prev, hours):
@@ -319,10 +299,45 @@ MEDALS = {1: "\U0001F947", 2: "\U0001F948", 3: "\U0001F949", 4: "4\uFE0F\u20E3",
 
 
 def sh(v, signed=False):
-    return abbreviate(v, signed)
+    s = f"{v:+.2e}" if signed else f"{v:.2e}"
+    return s.replace("e+", "e")
 
 
-def discord_embed(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
+UA = "Mozilla/5.0 (compatible; pu-tracker/1.0)"
+RANK_COLORS = {1: 0xF1C40F, 2: 0xBDC3C7, 3: 0xCD7F32}
+_HS = {}
+
+
+def headshots(names):
+    """Roblox usernames -> headshot URLs (two public API calls for all names)."""
+    names = [n for n in names if re.fullmatch(r"[A-Za-z0-9_]{3,20}", n)]
+    need = [n for n in names if n.lower() not in _HS]
+    if need:
+        try:
+            req = urllib.request.Request(
+                "https://users.roblox.com/v1/usernames/users",
+                data=json.dumps({"usernames": need, "excludeBannedUsers": False}).encode(),
+                headers={"Content-Type": "application/json", "User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                ids = {u["requestedUsername"].lower(): u["id"] for u in json.load(r)["data"]}
+            if ids:
+                url = ("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds="
+                       + ",".join(str(i) for i in ids.values())
+                       + "&size=150x150&format=Png&isCircular=false")
+                with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}),
+                                            timeout=15) as r:
+                    by_id = {t["targetId"]: t.get("imageUrl") for t in json.load(r)["data"]}
+                for name, uid in ids.items():
+                    _HS[name] = by_id.get(uid)
+        except Exception as e:
+            print("headshots failed:", str(e)[:100])
+        for n in need:
+            _HS.setdefault(n.lower(), None)
+    return {n.lower(): _HS.get(n.lower()) for n in names}
+
+
+def discord_embeds(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
+    """One header, one small card per player (with avatar), one 'you vs #1' card."""
     local = now_utc.astimezone(TZ)
     hours = 0
     if prev_row:
@@ -337,8 +352,16 @@ def discord_embed(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
     shown = cur_rows[:SHOW_N]
     if me and me not in shown:
         shown = shown + [me]
+    hs = headshots([r["name"] for r in shown])
 
-    blocks, spikes = [], []
+    if prev_row:
+        sub = f"vs reading {hm(hours)} ago" + ("  \u00B7  \u26A0\uFE0F missed checks" if hours > 1.5 else "")
+    else:
+        sub = "Baseline saved - gains start next check"
+    embeds = [{"title": f"\U0001F338 Flower leaderboard  \u00B7  {local:%H:%M}",
+               "description": sub, "color": 0xE91E63}]
+
+    spikes = []
     for r in shown:
         k = r["name"].lower()
         you = "  \U0001F448 you" if r is me else ""
@@ -346,9 +369,8 @@ def discord_embed(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
         mv = ""
         if p is not None and p["rank"] != r["rank"]:
             mv = f"  {'\U0001F53A' if r['rank'] < p['rank'] else '\U0001F53B'}{abs(p['rank'] - r['rank'])}"
-        head = f"{MEDALS.get(r['rank'], '#' + str(r['rank']))} **{r['name']}**{you}{mv}"
-        val = f"{sh(r['value'])} {r['unit']}".strip()
-        gain = ""
+        medal = MEDALS.get(r["rank"], "#" + str(r["rank"]))
+        desc = f"**{sh(r['value'])} {r['unit']}**".strip()
         if k in cur_rates:
             g, rate, pct = cur_rates[k]
             arrow = ""
@@ -360,61 +382,54 @@ def discord_embed(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
                     arrow = " \u2191"
                 elif rate < pr[1] * 0.9:
                     arrow = " \u2193"
-            gain = f"\n*{sh(g, True)}  \u00B7  {sh(rate)}/h{arrow}" + (f"  \u00B7  {pct:+.2f}%*" if pct is not None else "*")
-        blocks.append(f"{head}\n{val}{gain}")
-    desc = "\n\n".join(blocks)
-    if spikes:
-        desc += "\n\n" + "\n".join(spikes)
+            desc += f"\n*{sh(g, True)}  \u00B7  {sh(rate)}/h{arrow}" + (
+                f"  \u00B7  {pct:+.2f}%*" if pct is not None else "*")
+        author = {"name": f"{medal} {r['name']}{you}{mv}"}
+        if hs.get(k):
+            author["icon_url"] = hs[k]
+        embeds.append({"author": author, "description": desc,
+                       "color": 0x57F287 if r is me else RANK_COLORS.get(r["rank"], 0x5865F2)})
 
-    color, fields = 0x5865F2, []
+    color, lines, title = 0x5865F2, [], "\U0001F3AF You"
     if not me:
-        fields.append({"name": "\u2753 You", "value": f"{ME} not found on the board", "inline": False})
+        lines.append(f"{ME} not found on the board")
     else:
+        title = f"\U0001F3AF You: rank #{me['rank']}"
         ref = cur_rows[0] if me["rank"] != 1 else (cur_rows[1] if len(cur_rows) > 1 else None)
         if ref and ref["unit"] == me["unit"]:
             gap = abs(ref["value"] - me["value"])
             u = me["unit"]
-            lines = []
             mk, rk = me["name"].lower(), ref["name"].lower()
-            have_rates = mk in cur_rates and rk in cur_rates
-            if me["rank"] != 1:
-                lines.append(f"Gap to #1: **{sh(gap)} {u}**")
-            else:
-                lines.append(f"Lead over #2: **{sh(gap)} {u}**")
+            body = [f"{'Gap to #1' if me['rank'] != 1 else 'Lead over #2'}: **{sh(gap)} {u}**"]
             pm, pr_ = (prev_by.get(mk), prev_by.get(rk)) if prev_by else (None, None)
-            if pm and pr_ and pm["unit"] == pr_["unit"] == u:
+            if pm and pr_ and pm["unit"] == pr_["unit"] == u and me["rank"] != 1:
                 chg = abs(pr_["value"] - pm["value"]) - gap
-                if me["rank"] != 1:
-                    lines.append(f"Since last check: {'\u2193 closed' if chg > 0 else '\u2191 grew'} {sh(abs(chg))}")
-            if have_rates:
+                body.append(f"Since last check: {'\u2193 closed' if chg > 0 else '\u2191 grew'} {sh(abs(chg))}")
+            verdict = ""
+            if mk in cur_rates and rk in cur_rates:
                 diff = cur_rates[mk][1] - cur_rates[rk][1]
                 if me["rank"] != 1:
                     if diff > 0:
                         color = 0x57F287
-                        lines.append(f"Closing: **{sh(diff)} {u}/h**")
-                        lines.append(f"Overtake: **~{hm(gap / diff)}** if both rates hold")
                         verdict = "\u2705 Gaining on #1"
+                        body.append(f"Closing: **{sh(diff)} {u}/h**")
+                        body.append(f"Overtake: **~{hm(gap / diff)}** if both rates hold")
                     else:
                         color = 0xED4245
-                        lines.append(f"Falling behind: **{sh(-diff)} {u}/h**")
-                        lines.append(f"Need **+{sh(-diff)} {u}/h** more to match #1")
                         verdict = "\u26A0\uFE0F Not catching #1"
+                        body.append(f"Falling behind: **{sh(-diff)} {u}/h**")
+                        body.append(f"Need **+{sh(-diff)} {u}/h** more to match #1")
                 else:
                     color = 0x57F287 if diff >= 0 else 0xFEE75C
-                    lines.append(f"Lead {'growing' if diff >= 0 else 'shrinking'}: **{sh(abs(diff))} {u}/h**")
                     verdict = "\U0001F451 You're #1"
-                lines.insert(0, f"**{verdict}**")
-            fields.append({"name": f"\U0001F3AF You: rank #{me['rank']}", "value": "\n".join(lines), "inline": False})
+                    body.append(f"Lead {'growing' if diff >= 0 else 'shrinking'}: **{sh(abs(diff))} {u}/h**")
+            lines = ([f"**{verdict}**"] if verdict else []) + body
         elif ref:
-            fields.append({"name": f"\U0001F3AF You: rank #{me['rank']}",
-                           "value": "Units differ from the leader - gap not computed.", "inline": False})
-    if prev_row:
-        foot = f"vs reading {hm(hours)} ago" + ("  \u00B7  \u26A0\uFE0F missed checks" if hours > 1.5 else "")
-    else:
-        foot = "Baseline saved - gains start next check"
-    return {"title": f"\U0001F338 Flower leaderboard  \u00B7  {local:%H:%M}",
-            "description": desc, "color": color, "fields": fields,
-            "footer": {"text": foot}, "timestamp": now_utc.isoformat()}
+            lines.append("Units differ from the leader - gap not computed.")
+    lines += spikes
+    embeds.append({"title": title, "description": "\n".join(lines) or "-", "color": color,
+                   "timestamp": now_utc.isoformat()})
+    return embeds
 
 
 # ---------------------------------------------------------------- notify
@@ -423,7 +438,7 @@ def notify(msg, embed=None):
     if not WEBHOOK:
         print("[no DISCORD_WEBHOOK_URL set - not sent]")
         return False
-    payload = {"embeds": [embed]} if embed else {"content": msg[:1900]}
+    payload = {"embeds": embed if isinstance(embed, list) else [embed]} if embed else {"content": msg[:1900]}
     req = urllib.request.Request(WEBHOOK, data=json.dumps(payload).encode(), headers={
         "Content-Type": "application/json", "User-Agent": "pu-tracker/1.0"})
     with urllib.request.urlopen(req, timeout=20) as r:
@@ -471,7 +486,7 @@ def main():
     save(con, now, rows)
     msg = build_report(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
     try:
-        embed = discord_embed(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
+        embed = discord_embeds(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
         notify(msg, embed)
     except Exception as ne:
         print("notify failed:", ne, file=sys.stderr)
