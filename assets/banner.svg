@@ -18,13 +18,7 @@
     <linearGradient id="bronze" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#f3b98a"/><stop offset="1" stop-color="#b06a35"/>
     </linearGradient>
-    <g id="flower">
-      <g fill="#ff8fc4">
-        <ellipse cx="0" cy="-14" rx="8" ry="12"/><ellipse cx="0" cy="14" rx="8" ry="12"/>
-        <ellipse cx="-14" cy="0" rx="12" ry="8"/><ellipse cx="14" cy="0" rx="12" ry="8"/>
-      </g>
-      <circle r="8" fill="#ffd34d"/>
-    </g>
+    <path id="spark" d="M0 -22 l6 16 16 6 -16 6 -6 16 -6 -16 -16 -6 16 -6z" fill="#ffe58a"/>
   </defs>
   <rect width="1280" height="400" rx="28" fill="url(#bg)"/>
 
@@ -54,10 +48,10 @@
     </g>
     <!-- crown -->
     <path d="M140 160 L146 122 L162 142 L175 112 L188 142 L204 122 L210 160 Z" fill="#ffd34d" stroke="#b8860b" stroke-width="3" stroke-linejoin="round"/>
-    <use href="#flower" x="175" y="96"/>
-    <use href="#flower" x="55" y="214" transform="rotate(0)"/>
-    <use href="#flower" x="295" y="246"/>
+    <use href="#spark" x="175" y="96"/>
+    <use href="#spark" x="55" y="214"/>
+    <use href="#spark" x="295" y="246"/>
   </g>
-  <use href="#flower" x="780" y="70" opacity="0.7"/>
-  <use href="#flower" x="1230" y="60" opacity="0.5"/>
+  <use href="#spark" x="780" y="70" opacity="0.7"/>
+  <use href="#spark" x="1230" y="60" opacity="0.5"/>
 </svg>
