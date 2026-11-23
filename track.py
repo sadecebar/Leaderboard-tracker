@@ -456,8 +456,14 @@ def _pillow():
         import PIL  # noqa
     except ImportError:
         import subprocess
-        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet",
-                        "--break-system-packages", "pillow"], check=False, timeout=120)
+        for extra in ([], ["--break-system-packages"], ["--user"]):
+            r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "pillow", *extra],
+                               capture_output=True, text=True, timeout=180)
+            print("pip install pillow", extra, "->", r.returncode, (r.stderr or "")[-300:])
+            if r.returncode == 0:
+                break
+        import importlib
+        importlib.invalidate_caches()
     from PIL import Image  # noqa
     return True
 
@@ -547,7 +553,9 @@ def discord_message(now_utc, *args):
         avatars = {k: _avatar(u, 156) for k, u in hs.items() if u}
         png = render_png(d, avatars)
     except Exception as e:
-        print("picture failed, using text:", e, file=sys.stderr)
+        import traceback
+        print("picture failed, using text:", repr(e), file=sys.stderr)
+        traceback.print_exc()
     if png:
         emb["description"] = f"{d['sub']}\n\n**{d['title']}**\n{verdict}"
         emb["image"] = {"url": "attachment://board.png"}
