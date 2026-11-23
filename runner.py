@@ -73,6 +73,19 @@ def safe(label, fn):
         return 1
 
 
+def flower_overdue():
+    """True when there is no flower snapshot from the last 50 minutes (e.g. first start)."""
+    try:
+        con = track.connect()
+        prev = track.last_ok(con, 1)
+        if not prev:
+            return True
+        age = (datetime.now(ZoneInfo("UTC")) - datetime.fromisoformat(prev[0]["ts_utc"])).total_seconds()
+        return age > 50 * 60
+    except Exception:
+        return False
+
+
 def main():
     if hatch and hatch.PREVIEW:  # manual "preview" run: one sample alert, then stop
         return hatch.main()
@@ -86,7 +99,13 @@ def main():
         t0 = time.time()
         now = datetime.now(TZ)
         hour_key = now.strftime("%Y-%m-%d %H")
-        if track and now.minute < 5 and hour_key != last_hour:
+        first = last_hour is None
+        if first:
+            overdue = bool(track) and flower_overdue()
+            last_hour = hour_key if not (now.minute < 5 or overdue) else None
+        else:
+            overdue = False
+        if track and ((now.minute < 5 and hour_key != last_hour) or overdue):
             last_hour = hour_key
             safe("flower check", track.main)
             save_state("flower snapshot")
