@@ -38,42 +38,42 @@ def fetch_text():
         before = pg.inner_text("body")
         print("--- page text BEFORE click (first 40 lines) ---")
         print("\n".join(before.splitlines()[:40]))
-        loc = pg.get_by_text("Total Flowers", exact=True)
-        n = loc.count()
-        if n == 0:
-            loc = pg.get_by_text("Total Flowers")
-            n = loc.count()
-        print("tab matches:", n)
-        if n:
+        tabs = pg.locator("button", has_text="Total Flowers")
+        print("tab matches:", tabs.count())
+        btn = tabs.first
+
+        def pressed():
             try:
-                print("tab html:", loc.nth(0).evaluate(
-                    "e => (e.closest('button,a,[role=tab],[role=button],li') || e.parentElement).outerHTML")[:300])
-            except Exception as e:
-                print("tab html failed:", str(e).splitlines()[0][:100])
-        clicked = False
-        for i in range(n):
-            el = loc.nth(i)
-            for how in ("normal", "force", "dom"):
+                return btn.get_attribute("aria-pressed", timeout=2000)
+            except Exception:
+                return None
+
+        print("aria-pressed before:", pressed())
+        if pressed() != "true":
+            for how in ("dom", "normal", "force"):
                 try:
-                    if how == "normal":
-                        el.scroll_into_view_if_needed(timeout=3000)
-                        el.click(timeout=4000)
-                    elif how == "force":
-                        el.click(timeout=4000, force=True)
+                    if how == "dom":
+                        btn.evaluate("e => e.click()")
+                    elif how == "normal":
+                        btn.scroll_into_view_if_needed(timeout=3000)
+                        btn.click(timeout=4000)
                     else:
-                        el.evaluate("e => (e.closest('button,a,[role=tab],[role=button],li') || e).click()")
-                    print("clicked via", how)
-                    clicked = True
-                    break
+                        btn.click(timeout=4000, force=True)
                 except Exception as e:
                     print(how, "click failed:", str(e).splitlines()[0][:100])
-            if clicked:
-                break
+                    continue
+                pg.wait_for_timeout(1500)
+                st = pressed()
+                print("after", how, "click aria-pressed =", st)
+                if st == "true":
+                    break
+        if pressed() != "true":
+            raise RuntimeError("could not select the Total Flowers tab; nothing saved")
         for _ in range(10):  # wait for the board to actually change
-            pg.wait_for_timeout(800)
             if pg.inner_text("body") != before:
                 break
-        pg.wait_for_timeout(1500)
+            pg.wait_for_timeout(800)
+        pg.wait_for_timeout(2500)
         text = ""
         for _ in range(8):  # scroll so lazy rows load until I'm found
             text = pg.inner_text("body")
