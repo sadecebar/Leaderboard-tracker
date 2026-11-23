@@ -195,6 +195,7 @@ def keep_rows(rows):
 
 def save(con, now_utc, rows):
     top = keep_rows(rows)
+    me = find_me(rows)
     cur = con.execute("INSERT INTO snaps2(ts_utc,ts_local,ok) VALUES(?,?,1)",
                       (now_utc.isoformat(), now_utc.astimezone(TZ).isoformat()))
     sid = cur.lastrowid
@@ -450,9 +451,9 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
         """Steadier speed for projections: trend average if known, else the last interval."""
         x = trend_r.get(r["name"].lower())
         if x is not None:
-            return x[1], f"{dhm(trend_h)} avg"
+            return max(0.0, x[1]), f"{dhm(trend_h)} avg"
         n = rate_now(r)
-        return (n, "last reading") if n is not None else (None, "")
+        return (max(0.0, n), "last reading") if n is not None else (None, "")
 
     shown, hidden = list(cur_rows[:SHOW_N]), 0
     if me and me["rank"] > SHOW_N:
@@ -507,7 +508,8 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
     else:
         mr, u = me["rank"], me["unit"]
         mrate = rate_now(me)
-        moved = (prev_by.get(me["name"].lower()) or {}).get("rank") if prev_by else None
+        pm_row = prev_by.get(me["name"].lower()) if prev_by else None
+        moved = pm_row["rank"] if pm_row is not None else None
         if mr == 1:
             title = rnd.choice(["\U0001F451 Long live the king!", "\U0001F451 Still on the throne",
                                 "\U0001F451 The crown suits you", "\U0001F451 Flower royalty"])
@@ -607,7 +609,9 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
                 ls = speed(lead)[0] or 0
                 need = (lead["value"] - me["value"]) / T + ls
                 mult = need / ms if ms > 0 else float("inf")
-                if mult <= 1:
+                if mult == float("inf"):
+                    verdict.append(f"\U0001F634 **You're not gaining right now.** To finish #1 you'd need **{sh(need)}/h** - time to farm!")
+                elif mult <= 1:
                     verdict.append(f"\U0001F680 **On course for #1** - at current speeds you finish ~{sh(my_final - proj[lead['name']])} ahead of {lead['name']}.")
                 elif mult <= 2:
                     verdict.append(f"\U0001F4AA **Within reach.** To finish #1 you need **{sh(need)}/h** (**{mult:.1f}x** your speed).")
