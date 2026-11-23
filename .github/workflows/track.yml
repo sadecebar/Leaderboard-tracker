@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       preview:
-        description: "Send a sample hatch alert and stop"
+        description: "Send a test Flower report now and stop"
         type: boolean
         default: false
 
@@ -40,7 +40,7 @@ jobs:
           python-version: "3.12"
       - name: Install browser
         if: steps.gate.outputs.done != 'true'
-        run: pip install playwright && playwright install --with-deps chromium
+        run: pip install playwright pillow && playwright install --with-deps chromium
       - name: Run tracker loop
         id: loop
         if: steps.gate.outputs.done != 'true'
