@@ -1,44 +1,58 @@
-name: flower-tracker
+name: tracker-runner
 
 on:
   schedule:
-    - cron: "5 * * * *"
-  workflow_dispatch: {}
+    - cron: "*/15 * * * *"   # backup restarter only; the job normally restarts itself
+  workflow_dispatch:
+    inputs:
+      preview:
+        description: "Send a sample hatch alert and stop"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
-  group: flower-tracker
+  group: tracker-runner
   cancel-in-progress: false
 
 jobs:
-  track:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 355
+    env:
+      STOP_AT: "2026-11-27T19:00:00+01:00"   # Friday 19:00 Stockholm: leaderboard ends
     steps:
       - uses: actions/checkout@v4
+      - name: Check stop time
+        id: gate
+        run: |
+          if [ -n "$STOP_AT" ] && [ "$(date -u +%s)" -ge "$(date -d "$STOP_AT" +%s)" ]; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "done=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v5
+        if: steps.gate.outputs.done != 'true'
         with:
           python-version: "3.12"
-      - run: pip install playwright && playwright install --with-deps chromium
-      - name: Check leaderboard and report
-        run: python track.py
+      - name: Install browser
+        if: steps.gate.outputs.done != 'true'
+        run: pip install playwright && playwright install --with-deps chromium
+      - name: Run tracker loop
+        id: loop
+        if: steps.gate.outputs.done != 'true'
+        run: python runner.py
         env:
+          HATCH_QUERY: ${{ secrets.HATCH_QUERY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      - name: Save history to the repo
-        if: always()
-        run: |
-          git config user.name "flower-tracker"
-          git config user.email "flower-tracker@users.noreply.github.com"
-          git add data/tracker.db
-          git diff --cached --quiet || (git commit -m "snapshot" && git pull --rebase && git push)
-      - name: Keep debug screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: last-page
-          path: |
-            data/last.png
-            data/last.txt
-          if-no-files-found: ignore
+          FLOWER_WEBHOOK_URL: ${{ secrets.FLOWER_WEBHOOK_URL }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          PREVIEW: ${{ inputs.preview }}
+      - name: Start the next run
+        if: ${{ !cancelled() && inputs.preview != true && steps.gate.outputs.done != 'true' && steps.loop.outputs.done != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run "${{ github.workflow }}" --ref "${{ github.ref_name }}"
