@@ -186,9 +186,29 @@ def save_failure(con, now_utc, err):
 
 
 # ---------------------------------------------------------------- maths
+def abbreviate(v, signed=False):
+    units = [
+        (1e33, "Dc"),
+        (1e30, "No"),
+        (1e27, "Oc"),
+        (1e24, "Sp"),
+        (1e21, "Sx"),
+        (1e18, "Qi"),
+        (1e15, "Qa"),
+        (1e12, "T"),
+        (1e9, "B"),
+        (1e6, "M"),
+        (1e3, "K"),
+    ]
+    for threshold, suffix in units:
+        if abs(v) >= threshold:
+            n = v / threshold
+            return f"{n:+.2f}{suffix}" if signed else f"{n:.2f}{suffix}"
+    return f"{v:+.2f}" if signed else f"{v:.2f}"
+
+
 def fnum(v, unit, signed=False):
-    s = f"{v:+.4e}" if signed else f"{v:.4e}"
-    return f"{s} {unit}".strip()
+    return f"{abbreviate(v, signed)} {unit}".strip()
 
 
 def rates(cur, prev, hours):
@@ -299,8 +319,7 @@ MEDALS = {1: "\U0001F947", 2: "\U0001F948", 3: "\U0001F949", 4: "4\uFE0F\u20E3",
 
 
 def sh(v, signed=False):
-    s = f"{v:+.3e}" if signed else f"{v:.3e}"
-    return s.replace("e+", "e")
+    return abbreviate(v, signed)
 
 
 def discord_embed(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
