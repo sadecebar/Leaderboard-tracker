@@ -23,6 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
+      # ---- leaderboard settings: for a new board, change only this block ----
+      TRACK_BOARD: "Total Flowers"     # exact tab name on petsuniverse.org/players
+      TRACK_TITLE: "Flower"            # shown as "<TITLE> leaderboard"
+      TRACK_EMOJI: "🌸"
+      TRACK_MIN_EXP: "20"              # wrong-board guard: top value must be >= 1e20
+      TRACK_DB: "data/tracker.db"      # use a NEW file per board so histories don't mix
+      TRACK_USER: "Imnotsadece"
       STOP_AT: "2026-11-27T19:00:00+01:00"   # Friday 19:00 Stockholm: leaderboard ends
     steps:
       - uses: actions/checkout@v4
