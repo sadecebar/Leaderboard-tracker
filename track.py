@@ -44,15 +44,36 @@ def fetch_text():
             loc = pg.get_by_text("Total Flowers")
             n = loc.count()
         print("tab matches:", n)
-        for i in range(n):
+        if n:
             try:
-                loc.nth(i).scroll_into_view_if_needed(timeout=3000)
-                loc.nth(i).click(timeout=5000)
-                print("clicked match", i)
-                break
+                print("tab html:", loc.nth(0).evaluate(
+                    "e => (e.closest('button,a,[role=tab],[role=button],li') || e.parentElement).outerHTML")[:300])
             except Exception as e:
-                print("click failed", i, str(e).splitlines()[0][:120])
-        pg.wait_for_timeout(3000)
+                print("tab html failed:", str(e).splitlines()[0][:100])
+        clicked = False
+        for i in range(n):
+            el = loc.nth(i)
+            for how in ("normal", "force", "dom"):
+                try:
+                    if how == "normal":
+                        el.scroll_into_view_if_needed(timeout=3000)
+                        el.click(timeout=4000)
+                    elif how == "force":
+                        el.click(timeout=4000, force=True)
+                    else:
+                        el.evaluate("e => (e.closest('button,a,[role=tab],[role=button],li') || e).click()")
+                    print("clicked via", how)
+                    clicked = True
+                    break
+                except Exception as e:
+                    print(how, "click failed:", str(e).splitlines()[0][:100])
+            if clicked:
+                break
+        for _ in range(10):  # wait for the board to actually change
+            pg.wait_for_timeout(800)
+            if pg.inner_text("body") != before:
+                break
+        pg.wait_for_timeout(1500)
         text = ""
         for _ in range(8):  # scroll so lazy rows load until I'm found
             text = pg.inner_text("body")
@@ -84,10 +105,13 @@ def parse_board(text):
         num, unit = m.groups()
         if not unit and "e" not in num.lower() and "." not in num:
             continue  # a plain number is a rank, not a score
-        name = lines[i - 1]
+        k = i - 1
+        if lines[k].lower() == "private stats" and k >= 1:
+            k -= 1  # extra label line between the username and the value
+        name = lines[k]
         if name.isdigit():
             continue
-        rank = int(lines[i - 2]) if i >= 2 and lines[i - 2].isdigit() else len(rows) + 1
+        rank = int(lines[k - 1]) if k >= 1 and lines[k - 1].isdigit() else len(rows) + 1
         if rank == 1 and rows:
             break  # a second board started
         if rank != len(rows) + 1:
