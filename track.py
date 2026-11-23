@@ -375,29 +375,52 @@ def headshots(names):
 
 
 def _eta(gap, speed):
-    return hm(gap / speed) if speed and speed > 0 and gap > 0 else None
+    return dhm(gap / speed) if speed and speed > 0 and gap > 0 else None
 
 
-def _left_until_stop():
+def hours_left(now_utc=None):
+    """Hours until STOP_AT (the leaderboard closing), or None."""
     stop = os.environ.get("STOP_AT")
     if not stop:
-        return ""
+        return None
     try:
-        sec = (datetime.fromisoformat(stop) - datetime.now(timezone.utc)).total_seconds()
+        sec = (datetime.fromisoformat(stop) - (now_utc or datetime.now(timezone.utc))).total_seconds()
     except ValueError:
-        return ""
-    if sec <= 0:
-        return ""
-    d, h = int(sec // 86400), int(sec % 86400 // 3600)
-    return f"leaderboard closes in {d}d {h}h" if d else f"leaderboard closes in {h}h {int(sec % 3600 // 60)}m"
+        return None
+    return sec / 3600 if sec > 0 else None
 
 
-TAGS = {"SLEEPING": (112, 117, 128), "ON FIRE": (255, 140, 0),
-        "SURGING": (87, 242, 135), "COOLING": (88, 166, 255)}
+def dhm(hours):
+    m = int(round(hours * 60))
+    d, rem = divmod(m, 1440)
+    h, mm = divmod(rem, 60)
+    parts = ([f"{d}d"] if d else []) + ([f"{h}h"] if h else []) + ([f"{mm}m"] if mm and not d else [])
+    return " ".join(parts) or "0m"
 
 
-def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
-    """All numbers/text for the report, independent of how it is drawn."""
+def bar(ratio, cells=10):
+    n = max(0, min(cells, int(round(ratio * cells))))
+    return "▰" * n + "▱" * (cells - n)
+
+
+def trend_snapshot(con, now_utc, want_h=6.0):
+    """An older good snapshot (about want_h ago, at least ~40 min) for steadier speeds."""
+    best = None
+    for r in con.execute("SELECT * FROM snaps2 WHERE ok=1 ORDER BY id DESC LIMIT 80"):
+        age = (now_utc - datetime.fromisoformat(r["ts_utc"])).total_seconds() / 3600
+        if age < 0.65:
+            continue
+        if best is None or abs(age - want_h) < abs(best[0] - want_h):
+            best = (age, r)
+    return (best[1], load_rows(con, best[1]["id"]), best[0]) if best else None
+
+
+TAGS = {"SLEEPING": "\U0001F634 no gain", "ON FIRE": "\U0001F525 on fire", "SURGING": "\U0001F680 surging",
+        "COOLING": "\U0001F9CA cooling"}
+
+
+def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=None):
+    """Everything the report says, as plain data + text lines."""
     import random
     local = now_utc.astimezone(TZ)
     rnd = random.Random(local.strftime("%Y%m%d%H"))
@@ -410,9 +433,27 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
         h2 = (datetime.fromisoformat(prev_row["ts_utc"])
               - datetime.fromisoformat(pp_row["ts_utc"])).total_seconds() / 3600
         prev_rates = rates(prev_by, pp_by, h2)
+    trend_r, trend_h = {}, 0
+    if trend:
+        trend_h = trend[2]
+        trend_r = rates(cur_by, trend[1], trend_h)
     me = find_me(cur_rows)
     by_rank = {r["rank"]: r for r in cur_rows}
     lead = cur_rows[0]
+    T = hours_left(now_utc)
+
+    def rate_now(r):
+        x = cur_rates.get(r["name"].lower()) if r else None
+        return x[1] if x else None
+
+    def speed(r):
+        """Steadier speed for projections: trend average if known, else the last interval."""
+        x = trend_r.get(r["name"].lower())
+        if x is not None:
+            return x[1], f"{dhm(trend_h)} avg"
+        n = rate_now(r)
+        return (n, "last reading") if n is not None else (None, "")
+
     shown, hidden = list(cur_rows[:SHOW_N]), 0
     if me and me["rank"] > SHOW_N:
         extra = []
@@ -422,14 +463,8 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
         extra.append(me)
         hidden = extra[0]["rank"] - SHOW_N - 1
         shown += extra
-    if prev_row:
-        sub = f"vs reading {hm(hours)} ago" + ("  ·  ⚠️ missed checks" if hours > 1.5 else "")
-    else:
-        sub = "Baseline saved - gains start next check"
-
-    def rate_of(r):
-        x = cur_rates.get(r["name"].lower()) if r else None
-        return x[1] if x else None
+    sub = (f"vs reading {hm(hours)} ago" + ("  ·  ⚠️ missed checks" if hours > 1.5 else "")
+           if prev_row else "Baseline saved - gains start next check")
 
     players, spikes = [], []
     for r in shown:
@@ -438,13 +473,12 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
         d = {"rank": r["rank"], "name": r["name"], "me": r is me,
              "move": (p["rank"] - r["rank"]) if p is not None else 0,
              "value": f"{sh(r['value'])} {r['unit']}".strip(), "delta": "", "tag": None, "gap": "",
-             "ratio": (r["value"] / lead["value"]) if lead["unit"] == r["unit"] and lead["value"] else None,
              "hidden_before": 0}
         if r["unit"] == lead["unit"]:
             if r["rank"] == 1 and len(cur_rows) > 1 and cur_rows[1]["unit"] == r["unit"]:
-                d["gap"] = f"+{sh(r['value'] - cur_rows[1]['value'])} lead"
+                d["gap"] = f"**+{sh(r['value'] - cur_rows[1]['value'])}** lead"
             elif r["rank"] > 1:
-                d["gap"] = f"-{sh(lead['value'] - r['value'])} to #1"
+                d["gap"] = f"**-{sh(lead['value'] - r['value'])}** to #1"
         if k in cur_rates:
             g, rate, pct = cur_rates[k]
             arrow = ""
@@ -465,14 +499,15 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
     if hidden > 0 and len(players) > SHOW_N:
         players[SHOW_N]["hidden_before"] = hidden
 
-    # ------------------------------------------------------------ the story
-    color, title, lines = 0x5865F2, "\U0001F3AF You", []
+    # ------------------------------------------------ the story (what is going on right now)
+    color, title, story = 0x5865F2, "\U0001F3AF You", []
+    verdict = []   # the endgame block
     if not me:
-        lines.append(f"\U0001F50D **{ME}** isn't in the {len(cur_rows)} ranks I could load - still looking next check.")
+        story.append(f"\U0001F50D **{ME}** isn't in the {len(cur_rows)} ranks I could load - I'll look again next check.")
     else:
-        mr, u, mk = me["rank"], me["unit"], me["name"].lower()
-        mrate = rate_of(me)
-        moved = (prev_by.get(mk) or {}).get("rank") if prev_by else None
+        mr, u = me["rank"], me["unit"]
+        mrate = rate_now(me)
+        moved = (prev_by.get(me["name"].lower()) or {}).get("rank") if prev_by else None
         if mr == 1:
             title = rnd.choice(["\U0001F451 Long live the king!", "\U0001F451 Still on the throne",
                                 "\U0001F451 The crown suits you", "\U0001F451 Flower royalty"])
@@ -480,229 +515,150 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
             rv = cur_rows[1] if len(cur_rows) > 1 else None
             if rv and rv["unit"] == u:
                 gap = me["value"] - rv["value"]
-                lines.append(f"**{rv['name']}** is **{sh(gap)} {u}** behind you.")
-                rr = rate_of(rv)
+                story.append(f"**{rv['name']}** is **{sh(gap)} {u}** behind you.")
+                rr = rate_now(rv)
                 if mrate is not None and rr is not None:
                     diff = rr - mrate
                     if diff > 0:
                         color = 0xFEE75C
                         eta = _eta(gap, diff)
-                        lines.append(f"\U0001F62C They're out-growing you by **{sh(diff)}/h**" +
-                                     (f" - at this pace they steal the crown in **~{eta}**. Time to farm!" if eta else "."))
+                        story.append(f"\U0001F62C Right now they're growing **{sh(diff)}/h** faster than you" +
+                                     (f" - at that pace they pass you in **~{eta}**." if eta else "."))
                     elif diff < 0:
-                        lines.append(f"\U0001F60E You're out-farming them by **{sh(-diff)}/h** - the gap keeps growing.")
+                        story.append(f"\U0001F60E You're out-farming them by **{sh(-diff)}/h** right now.")
                     else:
-                        lines.append("\U0001F91D Same speed as #2 - the gap holds.")
+                        story.append("\U0001F91D Same speed as #2 right now - the gap holds.")
         else:
             title = rnd.choice(["\U0001F3C3 The chase is on", "\U0001F3AF Eyes on the crown",
                                 "\U0001F331 Growing toward the top", "\U0001F52D Crown in sight"])
-            color = 0x5865F2
             if lead["unit"] == u:
                 gap = lead["value"] - me["value"]
-                lines.append(f"You're **#{mr}** - **{sh(gap)} {u}** behind **{lead['name']}**.")
-                lr = rate_of(lead)
+                story.append(f"You're **#{mr}** - **{sh(gap)} {u}** behind **{lead['name']}** (**{me['value'] / lead['value'] * 100:.0f}%** of their total).")
+                lr = rate_now(lead)
                 if mrate is not None and lr is not None:
                     diff = mrate - lr
                     if diff > 0:
                         color = 0x57F287
                         eta = _eta(gap, diff)
-                        lines.append(f"\U0001F680 You're closing in at **{sh(diff)}/h**" +
+                        story.append(f"\U0001F680 You're closing in at **{sh(diff)}/h**" +
                                      (f" - crown in **~{eta}** if both keep this pace!" if eta else "."))
                     elif diff == 0:
-                        lines.append("\U0001F91D Same speed as #1 - the gap holds.")
+                        story.append("\U0001F91D Same speed as #1 - the gap holds.")
                     else:
                         color = 0xED4245
-                        lines.append(f"\U0001F40C #1 is pulling away by **{sh(-diff)}/h** - "
+                        story.append(f"\U0001F40C #1 is pulling away by **{sh(-diff)}/h** - "
                                      f"you need **+{sh(-diff)}/h** just to hold the gap.")
             ab = by_rank.get(mr - 1)
             if ab and ab is not lead and ab["unit"] == u:
-                eta = _eta(ab["value"] - me["value"], (mrate - rate_of(ab)) if mrate is not None and rate_of(ab) is not None else None)
-                lines.append(f"\U0001F4CD Next target: **{ab['name']}** (#{ab['rank']}), {sh(ab['value'] - me['value'])} ahead" +
+                ar = rate_now(ab)
+                eta = _eta(ab["value"] - me["value"], (mrate - ar) if mrate is not None and ar is not None else None)
+                story.append(f"\U0001F4CD Next target: **{ab['name']}** (#{ab['rank']}), {sh(ab['value'] - me['value'])} ahead" +
                              (f" - you pass them in **~{eta}**." if eta else "."))
             if mr > SHOW_N:
                 f5 = by_rank.get(SHOW_N)
                 if f5 and f5["unit"] == u:
-                    lines.append(f"\U0001F6A7 {mr - SHOW_N} places and **{sh(f5['value'] - me['value'])}** from the top {SHOW_N}.")
+                    story.append(f"\U0001F6A7 {mr - SHOW_N} places and **{sh(f5['value'] - me['value'])}** from the top {SHOW_N}.")
         bl = by_rank.get(mr + 1)
-        if bl and bl["unit"] == u and mrate is not None and rate_of(bl) is not None and rate_of(bl) > mrate:
-            eta = _eta(me["value"] - bl["value"], rate_of(bl) - mrate)
+        if mr != 1 and bl and bl["unit"] == u and mrate is not None and rate_now(bl) is not None and rate_now(bl) > mrate:
+            eta = _eta(me["value"] - bl["value"], rate_now(bl) - mrate)
             if eta:
-                lines.append(f"\U0001F440 **{bl['name']}** (#{bl['rank']}) is gaining on you - passes you in **~{eta}**.")
+                story.append(f"\U0001F440 **{bl['name']}** (#{bl['rank']}) is gaining on you - passes you in **~{eta}**.")
         if moved and moved != mr:
-            lines.append(("\U0001F4C8 You climbed **%d** place%s since last check!" % (moved - mr, "" if moved - mr == 1 else "s"))
-                         if moved > mr else ("\U0001F4C9 You slipped **%d** place%s since last check." % (mr - moved, "" if mr - moved == 1 else "s")))
-    for name, x in spikes[:2]:
-        lines.append(f"\U0001F525 **{name}** is on a farming spree - {x:.1f}x faster than last reading.")
+            n = abs(moved - mr)
+            story.append((f"\U0001F4C8 You climbed **{n}** place{'s' * (n != 1)} since last check!") if moved > mr
+                         else (f"\U0001F4C9 You slipped **{n}** place{'s' * (n != 1)} since last check."))
+        for name, x in spikes[:2]:
+            story.append(f"\U0001F525 **{name}** is on a farming spree - {x:.1f}x faster than last reading.")
+
+        # -------------------------------------------- endgame: can anyone still pass / can I still catch #1?
+        ms, label = speed(me)
+        if T and ms is not None:
+            verdict.append(f"⏳ **{dhm(T)} left** - projections use each player's **{label}** speed.")
+            same = [r for r in cur_rows if r["unit"] == u and r is not me]
+            proj = {r["name"]: r["value"] + (speed(r)[0] or 0) * T for r in same + [me]}
+            my_final = proj[me["name"]]
+            order = sorted(proj, key=lambda n: -proj[n])
+            place = order.index(me["name"]) + 1
+            medal = {1: "\U0001F947 ", 2: "\U0001F948 ", 3: "\U0001F949 "}.get(place, "")
+            verdict.append(f"\U0001F52E Projected finish: {medal}**#{place}** with ~**{sh(my_final)} {u}**.")
+            if mr == 1:
+                best = None  # the most dangerous rival = needs the smallest speed-up to catch me
+                for r in same:
+                    rs = speed(r)[0]
+                    need = (me["value"] - r["value"]) / T + ms  # their required speed to tie at the end
+                    mult = need / rs if rs and rs > 0 else float("inf")
+                    if best is None or mult < best[0]:
+                        best = (mult, r, need)
+                if best:
+                    mult, rv, need = best
+                    if mult == float("inf"):
+                        verdict.append(f"\U0001F512 **Locked in.** Nobody is growing fast enough to matter - {rv['name']} would have to wake up first.")
+                    elif mult > 5:
+                        verdict.append(f"\U0001F512 **Practically locked.** **{rv['name']}** would need **{mult:.1f}x** their current speed "
+                                       f"({sh(need)}/h) for the rest of the event. They can't realistically pass you anymore.")
+                    elif mult > 2:
+                        verdict.append(f"✅ **Comfortable.** **{rv['name']}** needs **{mult:.1f}x** their speed ({sh(need)}/h) to catch you - possible, but a big ask.")
+                    elif mult > 1:
+                        verdict.append(f"⚠️ **Still in range!** **{rv['name']}** only needs **{mult:.1f}x** their speed ({sh(need)}/h) to pass you. Keep farming.")
+                    else:
+                        gap_end = proj[rv["name"]] - my_final
+                        verdict.append(f"\U0001F6A8 **{rv['name']} passes you before the end** at current speeds (finishes ~{sh(gap_end)} ahead). Speed up!")
+            elif lead["unit"] == u:
+                ls = speed(lead)[0] or 0
+                need = (lead["value"] - me["value"]) / T + ls
+                mult = need / ms if ms > 0 else float("inf")
+                if mult <= 1:
+                    verdict.append(f"\U0001F680 **On course for #1** - at current speeds you finish ~{sh(my_final - proj[lead['name']])} ahead of {lead['name']}.")
+                elif mult <= 2:
+                    verdict.append(f"\U0001F4AA **Within reach.** To finish #1 you need **{sh(need)}/h** (**{mult:.1f}x** your speed).")
+                elif mult <= 5:
+                    verdict.append(f"\U0001F3D4️ **Big push needed.** You need **{sh(need)}/h** (**{mult:.1f}x** your speed) to take #1 before the end.")
+                else:
+                    verdict.append(f"\U0001F62C **Out of reach at this pace.** You'd need **{sh(need)}/h** (**{mult:.1f}x** your speed) - unless {lead['name']} stalls.")
+            bl2 = by_rank.get(mr + 1)
+            if mr != 1 and bl2 and bl2["unit"] == u:
+                bs = speed(bl2)[0] or 0
+                need_b = (me["value"] - bl2["value"]) / T + ms
+                mult_b = need_b / bs if bs > 0 else float("inf")
+                if mult_b <= 1:
+                    verdict.append(f"\U0001F440 **{bl2['name']}** (#{bl2['rank']}) will pass you before the end at current speeds.")
+                elif mult_b <= 3:
+                    verdict.append(f"\U0001F440 **{bl2['name']}** (#{bl2['rank']}) can still reach you - needs {mult_b:.1f}x their speed.")
     nxt = (local + timedelta(hours=1)).replace(minute=0)
-    foot = f"Next check {nxt:%H:00}" + (f"  ·  {_left_until_stop()}" if _left_until_stop() else "")
+    foot = f"Next check {nxt:%H:00}" + (f"  ·  closes in {dhm(T)}" if T else "")
     return {"time": f"{local:%H:%M}", "sub": sub, "players": players, "color": color, "foot": foot,
-            "title": title, "lines": lines, "now": now_utc.isoformat()}
+            "title": title, "story": story, "verdict": verdict, "now": now_utc.isoformat()}
 
 
-# ---------------------------------------------------------------- picture
-FONT_DIRS = ["/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/truetype/liberation/",
-             "/usr/share/fonts/truetype/noto/", "/usr/share/fonts/dejavu/"]
-
-
-def _font(size, bold=False):
-    from PIL import ImageFont
-    names = (["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf"] if bold
-             else ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf"])
-    for d in FONT_DIRS:
-        for n in names:
-            if os.path.exists(d + n):
-                return ImageFont.truetype(d + n, size)
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
-
-
-def _pillow():
-    try:
-        import PIL  # noqa
-    except ImportError:
-        import subprocess
-        for extra in ([], ["--break-system-packages"], ["--user"]):
-            r = subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "pillow", *extra],
-                               capture_output=True, text=True, timeout=180)
-            print("pip install pillow", extra, "->", r.returncode, (r.stderr or "")[-300:])
-            if r.returncode == 0:
-                break
-        import importlib
-        importlib.invalidate_caches()
-    from PIL import Image  # noqa
-    return True
-
-
-def _avatar(url, size):
-    from PIL import Image
-    import io
-    if not url:
-        return None
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=15) as r:
-            im = Image.open(io.BytesIO(r.read())).convert("RGBA")
-        return im.resize((size, size), Image.LANCZOS)
-    except Exception as e:
-        print("avatar failed:", str(e)[:80])
-        return None
-
-
-def render_png(data, avatars):
-    """One tall picture: big avatar left; name, total, gains, gap and a progress bar right."""
-    _pillow()
-    from PIL import Image, ImageDraw
-    import io
-    W, PAD, GAP, ROW, AV, DIV = 1000, 14, 14, 214, 164, 64
-    pl = data["players"]
-    H = PAD + sum(ROW + GAP + (DIV if p["hidden_before"] else 0) for p in pl)
-    img = Image.new("RGB", (W, H))
-    dr = ImageDraw.Draw(img)
-    for yy in range(H):  # soft vertical gradient background
-        t = yy / max(1, H)
-        dr.line((0, yy, W, yy), fill=(int(24 + 14 * t), int(25 + 6 * t), int(30 + 16 * t)))
-    f_name, f_val, f_sub, f_badge, f_tag = _font(44, True), _font(62, True), _font(33), _font(30, True), _font(24, True)
-    medal = {1: (241, 196, 15), 2: (189, 195, 199), 3: (205, 127, 50)}
-    y = PAD
-    for p in pl:
+def discord_message(now_utc, *args, **kw):
+    """ONE embed, text only (plus your Roblox head as a small corner picture)."""
+    d = prepare(now_utc, *args, **kw)
+    rows = []
+    for p in d["players"]:
         if p["hidden_before"]:
-            dr.text((W // 2, y + DIV // 2 - 4), f"·  ·  ·    {p['hidden_before']} more players    ·  ·  ·",
-                    font=f_sub, fill=(130, 134, 145), anchor="mm")
-            y += DIV
-        accent = (87, 242, 135) if p["me"] else medal.get(p["rank"], (88, 101, 242))
-        dr.rounded_rectangle((PAD, y, W - PAD, y + ROW), 24, fill=(43, 45, 52),
-                             outline=(87, 242, 135) if p["me"] else None, width=3)
-        dr.rounded_rectangle((PAD, y + 14, PAD + 10, y + ROW - 14), 5, fill=accent)
-        ax, ay = PAD + 30, y + (ROW - AV) // 2
-        av = avatars.get(p["name"].lower())
-        if av is not None:
-            mask = Image.new("L", (AV, AV), 0)
-            ImageDraw.Draw(mask).rounded_rectangle((0, 0, AV, AV), 28, fill=255)
-            img.paste(av.convert("RGB"), (ax, ay), mask)
-        else:
-            dr.rounded_rectangle((ax, ay, ax + AV, ay + AV), 28, fill=(64, 66, 73))
-            dr.text((ax + AV // 2, ay + AV // 2), p["name"][:1].upper(), font=f_val, fill=(200, 200, 205), anchor="mm")
-        if p["rank"] <= 3:
-            dr.rounded_rectangle((ax - 3, ay - 3, ax + AV + 3, ay + AV + 3), 30, outline=medal[p["rank"]], width=5)
-        if p["rank"] == 1:  # little crown on the leader's avatar
-            cx0, cy0 = ax + 6, ay - 22
-            dr.polygon([(cx0, cy0 + 34), (cx0, cy0 + 10), (cx0 + 14, cy0 + 22), (cx0 + 26, cy0),
-                        (cx0 + 38, cy0 + 22), (cx0 + 52, cy0 + 10), (cx0 + 52, cy0 + 34)],
-                       fill=(241, 196, 15), outline=(120, 90, 0))
-        tx = ax + AV + 30
-        right = W - PAD - 24
-        # rank badge, name, YOU pill, rank move
-        dr.ellipse((tx, y + 20, tx + 48, y + 68), fill=accent)
-        dr.text((tx + 24, y + 44), str(p["rank"]), font=f_badge if p["rank"] < 10 else f_tag,
-                fill=(20, 20, 22) if (p["me"] or p["rank"] <= 3) else (255, 255, 255), anchor="mm")
-        nx = tx + 62
-        name, lim = p["name"], 360 if p["tag"] else 470
-        while dr.textlength(name, font=f_name) > lim and len(name) > 4:
-            name = name[:-2]
-        if name != p["name"]:
-            name += "…"
-        dr.text((nx, y + 44), name, font=f_name, fill=(255, 255, 255), anchor="lm")
-        cx = nx + dr.textlength(name, font=f_name) + 14
+            rows.append(f"· · ·  *{p['hidden_before']} more players*  · · ·")
+        head = f"{MEDALS.get(p['rank'], '`#' + str(p['rank']) + '`')} **{p['name']}**"
         if p["me"]:
-            w = dr.textlength("YOU", font=f_badge) + 26
-            dr.rounded_rectangle((cx, y + 24, cx + w, y + 64), 14, fill=(87, 242, 135))
-            dr.text((cx + w / 2, y + 44), "YOU", font=f_badge, fill=(20, 20, 22), anchor="mm")
-            cx += w + 10
+            head += "  \U0001F448 **you**"
         if p["move"]:
-            up = p["move"] > 0
-            dr.text((cx, y + 44), f"{'▲' if up else '▼'}{abs(p['move'])}", font=f_badge,
-                    fill=(87, 242, 135) if up else (237, 66, 69), anchor="lm")
-        if p["tag"]:  # status pill, top right
-            col = TAGS[p["tag"]]
-            w = dr.textlength(p["tag"], font=f_tag) + 26
-            dr.rounded_rectangle((right - w, y + 28, right, y + 62), 17, fill=col)
-            dr.text((right - w / 2, y + 45), p["tag"], font=f_tag, fill=(20, 20, 22), anchor="mm")
-        dr.text((tx, y + 116), p["value"], font=f_val, fill=(255, 255, 255), anchor="lm")
-        if p["gap"]:
-            lead_row = p["rank"] == 1
-            dr.text((right, y + 120), p["gap"], font=f_sub, anchor="rm",
-                    fill=(87, 242, 135) if lead_row else (237, 120, 120))
-        if p["delta"]:
-            dr.text((tx, y + 166), p["delta"].replace("  ", " "), font=f_sub, fill=(170, 174, 182), anchor="lm")
-        if p["ratio"] is not None:  # bar: how close to the leader
-            bx0, bx1, by0 = tx, right, y + ROW - 26
-            dr.rounded_rectangle((bx0, by0, bx1, by0 + 10), 5, fill=(62, 64, 72))
-            fw = max(10, int((bx1 - bx0) * min(1.0, p["ratio"])))
-            dr.rounded_rectangle((bx0, by0, bx0 + fw, by0 + 10), 5, fill=accent)
-        y += ROW + GAP
-    buf = io.BytesIO()
-    img.save(buf, "PNG", optimize=True)
-    return buf.getvalue()
-
-
-def discord_message(now_utc, *args):
-    """ONE embed: a short story on top, the leaderboard picture below.
-    If the picture can't be made, the same info as plain text."""
-    d = prepare(now_utc, *args)
+            head += f"  {'\U0001F53A' if p['move'] > 0 else '\U0001F53B'}{abs(p['move'])}"
+        if p["tag"]:
+            head += f"  ·  {TAGS[p['tag']]}"
+        line2 = f" `{p['value']}`" + (f"  ·  {p['gap']}" if p["gap"] else "")
+        line3 = f" *{p['delta']}*" if p["delta"] else ""
+        rows.append("\n".join(x for x in (head, line2, line3) if x))
+    parts = [f"*{d['sub']}*", "", "\n\n".join(rows), "", f"**{d['title']}**", *d["story"]]
+    if d["verdict"]:
+        parts += ["", "**\U0001F3C1 The endgame**", *d["verdict"]]
     emb = {"title": f"\U0001F338 Flower leaderboard  ·  {d['time']}", "color": d["color"],
-           "timestamp": d["now"], "footer": {"text": d["foot"]}}
-    story = "\n".join(d["lines"]) or "-"
-    png = None
+           "description": "\n".join(parts)[:4000], "timestamp": d["now"], "footer": {"text": d["foot"]}}
     try:
-        hs = headshots([p["name"] for p in d["players"]])
-        avatars = {k: _avatar(u, 164) for k, u in hs.items() if u}
-        png = render_png(d, avatars)
+        icon = headshots([ME]).get(ME.lower())
+        if icon:
+            emb["thumbnail"] = {"url": icon}
     except Exception as e:
-        import traceback
-        print("picture failed, using text:", repr(e), file=sys.stderr)
-        traceback.print_exc()
-    if png:
-        emb["description"] = f"*{d['sub']}*\n\n**{d['title']}**\n{story}"
-        emb["image"] = {"url": "attachment://board.png"}
-    else:
-        rows = []
-        for p in d["players"]:
-            you = "  \U0001F448 you" if p["me"] else ""
-            rows.append(f"{MEDALS.get(p['rank'], '#' + str(p['rank']))} **{p['name']}**{you}\n"
-                        f"{p['value']}" + (f"\n*{p['delta']}*" if p["delta"] else ""))
-        emb["description"] = (f"*{d['sub']}*\n\n" + "\n\n".join(rows) + f"\n\n**{d['title']}**\n{story}")
-    return emb, png
+        print("thumbnail failed:", e)
+    return emb, None
 
 
 # ---------------------------------------------------------------- notify
@@ -767,10 +723,15 @@ def main():
     pp_row = prevs[1] if len(prevs) > 1 else None
     prev_by = load_rows(con, prev_row["id"]) if prev_row else {}
     pp_by = load_rows(con, pp_row["id"]) if pp_row else {}
+    try:
+        trend = trend_snapshot(con, now)
+    except Exception as e:
+        print("trend failed:", e)
+        trend = None
     save(con, now, rows)
     msg = build_report(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
     try:
-        embed, png = discord_message(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
+        embed, png = discord_message(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=trend)
         notify(msg, embed, png)
     except Exception as ne:
         print("notify failed:", ne, file=sys.stderr)
