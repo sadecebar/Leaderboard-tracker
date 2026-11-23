@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import urllib.request
 import json
+import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -295,12 +296,23 @@ def build_report(now_utc, cur_rows, cur_by, prev_row, prev_by, prevprev_by, prev
     return "\n".join(out).strip()
 
 
-MEDALS = {1: "\U0001F947", 2: "\U0001F948", 3: "\U0001F949", 4: "4\uFE0F\u20E3", 5: "5\uFE0F\u20E3"}
+MEDALS = {1: "\U0001F947", 2: "\U0001F948", 3: "\U0001F949", 4: "4️⃣", 5: "5️⃣"}
+SUFFIX = ["", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc", "UDc", "DDc"]
 
 
 def sh(v, signed=False):
-    s = f"{v:+.2e}" if signed else f"{v:.2e}"
-    return s.replace("e+", "e")
+    """107.92e24 -> '107.92Sp' (K, M, B, T, Qa, Qi, Sx, Sp, Oc, No, Dc ...)."""
+    sign = ("-" if v < 0 else "+") if signed else ("-" if v < 0 else "")
+    av = abs(v)
+    if av < 999.995:
+        return f"{sign}{av:.2f}"
+    e = int(math.floor(math.log10(av))) // 3
+    mant = av / 10 ** (3 * e)
+    if round(mant, 2) >= 1000:
+        e, mant = e + 1, mant / 1000
+    if e >= len(SUFFIX):
+        return f"{sign}{av:.2e}".replace("e+", "e")
+    return f"{sign}{mant:.2f}{SUFFIX[e]}"
 
 
 UA = "Mozilla/5.0 (compatible; pu-tracker/1.0)"
@@ -336,8 +348,8 @@ def headshots(names):
     return {n.lower(): _HS.get(n.lower()) for n in names}
 
 
-def discord_embeds(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
-    """One header, one small card per player (with avatar), one 'you vs #1' card."""
+def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
+    """All numbers/text for the report, independent of how it is drawn."""
     local = now_utc.astimezone(TZ)
     hours = 0
     if prev_row:
@@ -352,43 +364,32 @@ def discord_embeds(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
     shown = cur_rows[:SHOW_N]
     if me and me not in shown:
         shown = shown + [me]
-    hs = headshots([r["name"] for r in shown])
-
     if prev_row:
-        sub = f"vs reading {hm(hours)} ago" + ("  \u00B7  \u26A0\uFE0F missed checks" if hours > 1.5 else "")
+        sub = f"vs reading {hm(hours)} ago" + ("  ·  ⚠️ missed checks" if hours > 1.5 else "")
     else:
         sub = "Baseline saved - gains start next check"
-    embeds = [{"title": f"\U0001F338 Flower leaderboard  \u00B7  {local:%H:%M}",
-               "description": sub, "color": 0xE91E63}]
 
-    spikes = []
+    players, spikes = [], []
     for r in shown:
         k = r["name"].lower()
-        you = "  \U0001F448 you" if r is me else ""
         p = prev_by.get(k) if prev_by else None
-        mv = ""
-        if p is not None and p["rank"] != r["rank"]:
-            mv = f"  {'\U0001F53A' if r['rank'] < p['rank'] else '\U0001F53B'}{abs(p['rank'] - r['rank'])}"
-        medal = MEDALS.get(r["rank"], "#" + str(r["rank"]))
-        desc = f"**{sh(r['value'])} {r['unit']}**".strip()
+        move = (p["rank"] - r["rank"]) if p is not None else 0   # +n = moved up
+        d = {"rank": r["rank"], "name": r["name"], "me": r is me, "move": move,
+             "value": f"{sh(r['value'])} {r['unit']}".strip(), "delta": ""}
         if k in cur_rates:
             g, rate, pct = cur_rates[k]
             arrow = ""
             pr = prev_rates.get(k)
             if pr and pr[1] > 0 and rate > 0:
                 if rate >= 2 * pr[1]:
-                    spikes.append(f"\u26A1 **{r['name']}** earning {rate / pr[1]:.1f}x faster than last reading")
+                    spikes.append(f"⚡ **{r['name']}** earning {rate / pr[1]:.1f}x faster than last reading")
                 elif rate > pr[1] * 1.1:
-                    arrow = " \u2191"
+                    arrow = " ↑"
                 elif rate < pr[1] * 0.9:
-                    arrow = " \u2193"
-            desc += f"\n*{sh(g, True)}  \u00B7  {sh(rate)}/h{arrow}" + (
-                f"  \u00B7  {pct:+.2f}%*" if pct is not None else "*")
-        author = {"name": f"{medal} {r['name']}{you}{mv}"}
-        if hs.get(k):
-            author["icon_url"] = hs[k]
-        embeds.append({"author": author, "description": desc,
-                       "color": 0x57F287 if r is me else RANK_COLORS.get(r["rank"], 0x5865F2)})
+                    arrow = " ↓"
+            d["delta"] = f"{sh(g, True)}  ·  {sh(rate)}/h{arrow}" + (
+                f"  ·  {pct:+.2f}%" if pct is not None else "")
+        players.append(d)
 
     color, lines, title = 0x5865F2, [], "\U0001F3AF You"
     if not me:
@@ -404,19 +405,19 @@ def discord_embeds(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
             pm, pr_ = (prev_by.get(mk), prev_by.get(rk)) if prev_by else (None, None)
             if pm and pr_ and pm["unit"] == pr_["unit"] == u and me["rank"] != 1:
                 chg = abs(pr_["value"] - pm["value"]) - gap
-                body.append(f"Since last check: {'\u2193 closed' if chg > 0 else '\u2191 grew'} {sh(abs(chg))}")
+                body.append(f"Since last check: {'↓ closed' if chg > 0 else '↑ grew'} {sh(abs(chg))}")
             verdict = ""
             if mk in cur_rates and rk in cur_rates:
                 diff = cur_rates[mk][1] - cur_rates[rk][1]
                 if me["rank"] != 1:
                     if diff > 0:
                         color = 0x57F287
-                        verdict = "\u2705 Gaining on #1"
+                        verdict = "✅ Gaining on #1"
                         body.append(f"Closing: **{sh(diff)} {u}/h**")
                         body.append(f"Overtake: **~{hm(gap / diff)}** if both rates hold")
                     else:
                         color = 0xED4245
-                        verdict = "\u26A0\uFE0F Not catching #1"
+                        verdict = "⚠️ Not catching #1"
                         body.append(f"Falling behind: **{sh(-diff)} {u}/h**")
                         body.append(f"Need **+{sh(-diff)} {u}/h** more to match #1")
                 else:
@@ -427,21 +428,163 @@ def discord_embeds(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row):
         elif ref:
             lines.append("Units differ from the leader - gap not computed.")
     lines += spikes
-    embeds.append({"title": title, "description": "\n".join(lines) or "-", "color": color,
-                   "timestamp": now_utc.isoformat()})
-    return embeds
+    return {"time": f"{local:%H:%M}", "sub": sub, "players": players, "color": color,
+            "title": title, "lines": lines, "now": now_utc.isoformat()}
+
+
+# ---------------------------------------------------------------- picture
+FONT_DIRS = ["/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/truetype/liberation/",
+             "/usr/share/fonts/truetype/noto/", "/usr/share/fonts/dejavu/"]
+
+
+def _font(size, bold=False):
+    from PIL import ImageFont
+    names = (["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf"] if bold
+             else ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf"])
+    for d in FONT_DIRS:
+        for n in names:
+            if os.path.exists(d + n):
+                return ImageFont.truetype(d + n, size)
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _pillow():
+    try:
+        import PIL  # noqa
+    except ImportError:
+        import subprocess
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet",
+                        "--break-system-packages", "pillow"], check=False, timeout=120)
+    from PIL import Image  # noqa
+    return True
+
+
+def _avatar(url, size):
+    from PIL import Image
+    import io
+    if not url:
+        return None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=15) as r:
+            im = Image.open(io.BytesIO(r.read())).convert("RGBA")
+        return im.resize((size, size), Image.LANCZOS)
+    except Exception as e:
+        print("avatar failed:", str(e)[:80])
+        return None
+
+
+def render_png(data, avatars):
+    """One tall image: big avatar on the left, name / total / gains on the right."""
+    _pillow()
+    from PIL import Image, ImageDraw
+    import io
+    W, PAD, GAP, ROW, AV = 1000, 14, 12, 192, 156
+    n = len(data["players"])
+    H = PAD + n * (ROW + GAP)
+    img = Image.new("RGB", (W, H), (30, 31, 34))
+    dr = ImageDraw.Draw(img)
+    f_name, f_val, f_sub, f_badge = _font(44, True), _font(60, True), _font(34), _font(30, True)
+    medal = {1: (241, 196, 15), 2: (189, 195, 199), 3: (205, 127, 50)}
+    y = PAD
+    for p in data["players"]:
+        accent = (87, 242, 135) if p["me"] else medal.get(p["rank"], (88, 101, 242))
+        dr.rounded_rectangle((PAD, y, W - PAD, y + ROW), 22, fill=(43, 45, 49))
+        dr.rounded_rectangle((PAD, y, PAD + 10, y + ROW), 5, fill=accent)
+        ax, ay = PAD + 26, y + (ROW - AV) // 2
+        av = avatars.get(p["name"].lower())
+        if av is not None:
+            mask = Image.new("L", (AV, AV), 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, AV, AV), 26, fill=255)
+            img.paste(av.convert("RGB"), (ax, ay), mask)
+        else:
+            dr.rounded_rectangle((ax, ay, ax + AV, ay + AV), 26, fill=(64, 66, 73))
+            dr.text((ax + AV // 2, ay + AV // 2), p["name"][:1].upper(), font=f_val,
+                    fill=(200, 200, 205), anchor="mm")
+        tx = ax + AV + 28
+        # rank badge + name (+ you pill, rank move)
+        dr.ellipse((tx, y + 18, tx + 46, y + 64), fill=accent)
+        dr.text((tx + 23, y + 41), str(p["rank"]), font=f_badge,
+                fill=(20, 20, 22) if (p["me"] or p["rank"] <= 3) else (255, 255, 255), anchor="mm")
+        nx, maxw = tx + 60, W - PAD - 20
+        name = p["name"]
+        while dr.textlength(name, font=f_name) > 430 and len(name) > 4:
+            name = name[:-2]
+        if name != p["name"]:
+            name += "…"
+        dr.text((nx, y + 41), name, font=f_name, fill=(255, 255, 255), anchor="lm")
+        cx = nx + dr.textlength(name, font=f_name) + 16
+        if p["me"]:
+            w = dr.textlength("YOU", font=f_badge) + 28
+            dr.rounded_rectangle((cx, y + 20, cx + w, y + 62), 14, fill=(87, 242, 135))
+            dr.text((cx + w / 2, y + 41), "YOU", font=f_badge, fill=(20, 20, 22), anchor="mm")
+            cx += w + 12
+        if p["move"]:
+            up = p["move"] > 0
+            dr.text((cx, y + 41), f"{'▲' if up else '▼'}{abs(p['move'])}", font=f_badge,
+                    fill=(87, 242, 135) if up else (237, 66, 69), anchor="lm")
+        dr.text((tx, y + 112), p["value"], font=f_val, fill=(255, 255, 255), anchor="lm")
+        if p["delta"]:
+            dr.text((tx, y + 166), p["delta"].replace("  ", " "), font=f_sub, fill=(170, 174, 182), anchor="lm")
+        y += ROW + GAP
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def discord_message(now_utc, *args):
+    """ONE embed. With the picture: verdict text on top, leaderboard image below.
+    If the picture can't be made: the same info as plain text lines."""
+    d = prepare(now_utc, *args)
+    emb = {"title": f"\U0001F338 Flower leaderboard  ·  {d['time']}", "color": d["color"],
+           "timestamp": d["now"]}
+    verdict = "\n".join(d["lines"]) or "-"
+    png = None
+    try:
+        hs = headshots([p["name"] for p in d["players"]])
+        avatars = {k: _avatar(u, 156) for k, u in hs.items() if u}
+        png = render_png(d, avatars)
+    except Exception as e:
+        print("picture failed, using text:", e, file=sys.stderr)
+    if png:
+        emb["description"] = f"{d['sub']}\n\n**{d['title']}**\n{verdict}"
+        emb["image"] = {"url": "attachment://board.png"}
+    else:
+        rows = []
+        for p in d["players"]:
+            you = "  \U0001F448 you" if p["me"] else ""
+            rows.append(f"{MEDALS.get(p['rank'], '#' + str(p['rank']))} **{p['name']}**{you}\n"
+                        f"{p['value']}" + (f"\n*{p['delta']}*" if p["delta"] else ""))
+        emb["description"] = (d["sub"] + "\n\n" + "\n\n".join(rows) +
+                              f"\n\n**{d['title']}**\n{verdict}")
+    return emb, png
 
 
 # ---------------------------------------------------------------- notify
-def notify(msg, embed=None):
+def _multipart(payload, png):
+    b = "----pu" + os.urandom(8).hex()
+    body = (f"--{b}\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
+            f"Content-Type: application/json\r\n\r\n{json.dumps(payload)}\r\n").encode()
+    body += (f"--{b}\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\"board.png\"\r\n"
+             f"Content-Type: image/png\r\n\r\n").encode() + png + f"\r\n--{b}--\r\n".encode()
+    return body, f"multipart/form-data; boundary={b}"
+
+
+def notify(msg, embed=None, png=None):
     print(msg)
     if not WEBHOOK:
         print("[no DISCORD_WEBHOOK_URL set - not sent]")
         return False
     payload = {"embeds": embed if isinstance(embed, list) else [embed]} if embed else {"content": msg[:1900]}
-    req = urllib.request.Request(WEBHOOK, data=json.dumps(payload).encode(), headers={
-        "Content-Type": "application/json", "User-Agent": "pu-tracker/1.0"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    if png:
+        data, ctype = _multipart(payload, png)
+    else:
+        data, ctype = json.dumps(payload).encode(), "application/json"
+    req = urllib.request.Request(WEBHOOK, data=data, headers={
+        "Content-Type": ctype, "User-Agent": "pu-tracker/1.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
         print("discord status", r.status)
     return True
 
@@ -486,8 +629,8 @@ def main():
     save(con, now, rows)
     msg = build_report(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
     try:
-        embed = discord_embeds(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
-        notify(msg, embed)
+        embed, png = discord_message(now, rows, cur_by, prev_row, prev_by, pp_by, pp_row)
+        notify(msg, embed, png)
     except Exception as ne:
         print("notify failed:", ne, file=sys.stderr)
     return 0
