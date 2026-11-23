@@ -16,6 +16,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 URL = "https://petsuniverse.org/players"
+# ---- which leaderboard to track: all set from the workflow file (.github/workflows/track.yml)
+BOARD = os.environ.get("TRACK_BOARD", "Total Flowers")    # exact tab name on the page
+TITLE = os.environ.get("TRACK_TITLE", "Flower")           # shown as "<TITLE> leaderboard"
+EMOJI = os.environ.get("TRACK_EMOJI", "\U0001F338")
 ME = os.environ.get("TRACK_USER", "Imnotsadece")
 TZ = ZoneInfo("Europe/Stockholm")
 DB = os.environ.get("TRACK_DB", "data/tracker.db")
@@ -37,23 +41,15 @@ def fetch_text():
     with sync_playwright() as p:
         b = p.chromium.launch()
         pg = b.new_page(viewport={"width": 430, "height": 1800})
-        pg.goto(URL, wait_until="networkidle", timeout=60000)
-        pg.wait_for_timeout(2000)
-        before = pg.inner_text("body")
-        print("--- page text BEFORE click (first 40 lines) ---")
-        print("\n".join(before.splitlines()[:40]))
-        tabs = pg.locator("button", has_text="Total Flowers")
-        print("tab matches:", tabs.count())
-        btn = tabs.first
-
-        def pressed():
+        def pressed(btn):
             try:
                 return btn.get_attribute("aria-pressed", timeout=2000)
             except Exception:
                 return None
 
-        print("aria-pressed before:", pressed())
-        if pressed() != "true":
+        def select_tab(btn):
+            if pressed(btn) == "true":
+                return True
             for how in ("dom", "normal", "force"):
                 try:
                     if how == "dom":
@@ -66,13 +62,37 @@ def fetch_text():
                 except Exception as e:
                     print(how, "click failed:", str(e).splitlines()[0][:100])
                     continue
-                pg.wait_for_timeout(1500)
-                st = pressed()
-                print("after", how, "click aria-pressed =", st)
-                if st == "true":
-                    break
-        if pressed() != "true":
-            raise RuntimeError("could not select the Total Flowers tab; nothing saved")
+                for _ in range(10):  # give the page up to 5 s to react
+                    pg.wait_for_timeout(500)
+                    if pressed(btn) == "true":
+                        print("tab selected via", how, "click")
+                        return True
+            return False
+
+        before, ok = "", False
+        for attempt in range(1, 4):  # the page sometimes loads slowly: reload and retry
+            print(f"--- attempt {attempt} ---")
+            try:
+                pg.goto(URL, wait_until="networkidle", timeout=60000)
+            except Exception as e:
+                print("goto problem:", str(e).splitlines()[0][:100])
+            pg.wait_for_timeout(2000 + 2500 * attempt)
+            before = pg.inner_text("body")
+            if attempt == 1:
+                print("--- page text BEFORE click (first 40 lines) ---")
+                print("\n".join(before.splitlines()[:40]))
+            tabs = pg.locator("button", has_text=BOARD)
+            print("tab matches:", tabs.count())
+            try:
+                tabs.first.wait_for(state="visible", timeout=15000)
+            except Exception:
+                print("tab button not visible yet")
+                continue
+            if select_tab(tabs.first):
+                ok = True
+                break
+        if not ok:
+            raise RuntimeError(f"could not select the {BOARD} tab after 3 tries; nothing saved")
         for _ in range(10):  # wait for the board to actually change
             if pg.inner_text("body") != before:
                 break
@@ -112,7 +132,7 @@ def parse_board(text, lenient=False):
     """Rows look like: rank / username / value (e.g. 7.59e+25vg)."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     for j, l in enumerate(lines):  # skip anything above the tab strip
-        if l == "Total Flowers":
+        if l == BOARD:
             lines = lines[j + 1:]
             break
     rows = []
@@ -240,7 +260,7 @@ def hm(hours):
 
 def build_report(now_utc, cur_rows, cur_by, prev_row, prev_by, prevprev_by, prevprev_row):
     local = now_utc.astimezone(TZ)
-    out = [f"FLOWER LEADERBOARD - {local:%H:%M} ({local:%a %d %b})"]
+    out = [f"{TITLE.upper()} LEADERBOARD - {local:%H:%M} ({local:%a %d %b})"]
     hours = 0
     if prev_row:
         pts = datetime.fromisoformat(prev_row["ts_utc"])
@@ -512,7 +532,7 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
         moved = pm_row["rank"] if pm_row is not None else None
         if mr == 1:
             title = rnd.choice(["\U0001F451 Long live the king!", "\U0001F451 Still on the throne",
-                                "\U0001F451 The crown suits you", "\U0001F451 Flower royalty"])
+                                "\U0001F451 The crown suits you", f"\U0001F451 {TITLE} royalty"])
             color = 0xF1C40F
             rv = cur_rows[1] if len(cur_rows) > 1 else None
             if rv and rv["unit"] == u:
@@ -654,12 +674,12 @@ def discord_message(now_utc, *args, **kw):
     parts = [f"*{d['sub']}  \u00B7  right = gap to #1*", "", "\n\n".join(rows), "", f"**{d['title']}**", *d["story"]]
     if d["verdict"]:
         parts += ["", "**\U0001F3C1 The endgame**", *d["verdict"]]
-    emb = {"title": f"\U0001F338 Flower leaderboard  ·  {d['time']}", "color": d["color"],
+    emb = {"title": f"{EMOJI} {TITLE} leaderboard  ·  {d['time']}", "color": d["color"],
            "description": "\n".join(parts)[:4000], "timestamp": d["now"], "footer": {"text": d["foot"]}}
     try:
         icon = headshots([ME]).get(ME.lower())
         if icon:
-            emb["author"] = {"name": f"{ME} \u00B7 Flower tracker", "icon_url": icon}
+            emb["author"] = {"name": f"{ME} \u00B7 {TITLE} tracker", "icon_url": icon}
     except Exception as e:
         print("thumbnail failed:", e)
     return emb, None
@@ -693,7 +713,7 @@ def notify(msg, embed=None, png=None):
 
 
 # ---------------------------------------------------------------- main
-def main():
+def main(quiet_fail=False):
     con = connect()
     now = datetime.now(timezone.utc)
     prevs = last_ok(con, 2)
@@ -714,7 +734,8 @@ def main():
         when = (datetime.fromisoformat(prevs[0]["ts_local"]).strftime("%a %H:%M")
                 if prevs else "never")
         try:
-            notify(f"\u26A0\uFE0F **Tracker check FAILED** at {now.astimezone(TZ):%H:%M}: {e}\n"
+            if not quiet_fail:  # a retry is coming - only the last failure is announced
+              notify(f"\u26A0\uFE0F **Tracker check FAILED** at {now.astimezone(TZ):%H:%M}: {e}\n"
                    f"Last good snapshot: {when}. Nothing was invented.")
         except Exception as ne:
             print("notify failed:", ne)
