@@ -2,7 +2,7 @@ name: flower-tracker
 
 on:
   schedule:
-    - cron: "3 * * * *"
+    - cron: "5 * * * *"
   workflow_dispatch: {}
 
 permissions:
