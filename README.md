@@ -16,22 +16,41 @@
 
 ---
 
+## 🆕 What's new
+
+| Date | Update |
+|---|---|
+| **26 Nov 2026** | 🖼️ The hourly report is now **two pictures**: the board (top 5 + you, with Roblox avatars and speed bars) and a 12-hour analysis |
+| **26 Nov 2026** | 🔟 Tracks the **top 15** every hour: overtakes coming, who enters or drops out of the top 10, and the projected final top 10 |
+| **26 Nov 2026** | 📏 Every judgement uses each player's **12-hour average speed**, never a single hour, and never guesses when there's no history |
+
 ## 🏁 What it does
 
 Leaderboard events are a marathon. Checking the board every hour from your phone gets old fast, so this does it for you.
 
-- ⏰ Posts **one report every hour at :00** to a Discord channel
-- 🥇 Top players + **you** + the players right above and below you, even if you're way outside the top 5
-- 📈 Gain, **speed per hour** and % change for everyone, with mood tags: 🔥 on fire · 🚀 surging · 🧊 cooling · 😴 no gain
-- 🔮 **Endgame maths**: projected finish place, and how much faster a rival would need to go to pass you (or you, to take #1)
+- ⏰ Posts **one report every hour at :00** to a Discord channel, as two pictures
+- 🥇 The **top 5** with their Roblox avatars, plus **you** if you're further down; the **top 15** are tracked behind the scenes
+- 📈 Each player's **12h average speed** as a bar, with mood tags: 🔥 on fire · 🚀 surging · 🧊 cooling · 😴 no gain
+- 🔜 **Overtakes coming**: who passes whom, and how soon
+- 🔮 **Endgame maths**: the projected final top 10, where you finish, and ✅/❌ checks for catching #1, passing the player above and holding off the one below
 - 🧾 Big numbers stay readable: `1.29e+26` becomes **`129.04Sp`** (K, M, B, T, Qa, Qi, Sx, Sp, Oc, No, Dc…)
 - 🛑 Stops by itself when the event ends, with a final "tracker finished" message
 
 ## 📸 What a report looks like
 
-<p align="center">
-  <img src="assets/example-report.svg" alt="Example hourly leaderboard report (example data)" width="520">
-</p>
+Every hour, one Discord message with two pictures *(example data, made-up players)*:
+
+<table>
+<tr>
+<td align="center" valign="top" width="50%"><b>1 · The board</b><br><br><img src="assets/example-board.png" alt="Example board picture: top 5 and you" width="100%"></td>
+<td align="center" valign="top" width="50%"><b>2 · The analysis</b><br><br><img src="assets/example-analysis.png" alt="Example analysis picture: overtakes, final top 10, last 12h, endgame" width="100%"></td>
+</tr>
+</table>
+
+- **The board:** rank badges, avatars, places moved in 12h (▲▼), the gap to #1 and a speed bar per player. Your own row is highlighted.
+- **The analysis:** 🔜 overtakes coming · 🔮 the final top 10 if everyone keeps their pace · 📰 what changed in the last 12 hours · 🏁 your endgame.
+
+If a picture ever can't be drawn, that hour's report is sent as text instead, so you never miss one.
 
 ## ⚙️ How it works
 
@@ -41,7 +60,7 @@ flowchart LR
     B --> C["🖱️ Clicks the board tab<br/>scrolls until you're loaded"]
     C --> D["💾 Snapshot into SQLite<br/>data/*.db"]
     D --> E["🧮 Speeds, trends,<br/>endgame projections"]
-    E --> F["💬 One Discord embed"]
+    E --> F["🖼️ Board + analysis pictures<br/>sent to Discord"]
     F --> A
 ```
 
@@ -76,6 +95,7 @@ Everything board-specific lives in **one block** at the top of `.github/workflow
 | File | Job |
 |---|---|
 | `track.py` | reads the board, stores snapshots, works out speeds and the endgame, builds the report |
+| `lbcard.py` | draws the two report pictures (board + analysis) |
 | `runner.py` | the long-running loop: hourly checks, retries, saving state, starting the next run |
 | `.github/workflows/track.yml` | the workflow + **the leaderboard settings** |
 | `data/*.db` | the leaderboard history (SQLite) |
