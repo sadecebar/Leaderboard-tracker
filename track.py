@@ -24,8 +24,9 @@ ME = os.environ.get("TRACK_USER", "Imnotsadece")
 TZ = ZoneInfo("Europe/Stockholm")
 DB = os.environ.get("TRACK_DB", "data/tracker.db")
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "")
-SHOW_N = 5      # rows shown in the report
-STORE_N = 10    # rows stored per snapshot (plus me, wherever I am)
+SHOW_N = 10     # rows shown in the report
+STORE_N = 15    # rows stored per snapshot (plus me, wherever I am) - #11-15 show who may enter/leave the top 10
+TREND_H = float(os.environ.get("TRACK_TREND_H", "12"))  # judgements use average speed over this window
 MIN_GAP_S = 600  # ignore a second run within 10 min (duplicate guard)
 MIN_EXP = int(os.environ.get("TRACK_MIN_EXP", "20"))  # flower totals are ~e+25
 VAL_RE = re.compile(r"^(\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z]{0,8})$")
@@ -106,7 +107,7 @@ def fetch_text():
                 seen[r["rank"]] = r
             if found_step is None and find_me(list(seen.values())):
                 found_step = step
-            if found_step is not None and step > found_step:
+            if found_step is not None and step > found_step and max(seen, default=0) > STORE_N:
                 break
             try:
                 if more.count():
@@ -440,8 +441,15 @@ TAGS = {"SLEEPING": "\U0001F634 no gain", "ON FIRE": "\U0001F525 on fire", "SURG
         "COOLING": "\U0001F9CA cooling"}
 
 
+def _names(xs):
+    xs = [f"**{x}**" for x in xs]
+    return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1]
+
+
 def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=None):
-    """Everything the report says, as plain data + text lines."""
+    """Everything the report says, as plain data + text lines.
+    All judgements (tags, who passes whom, projections) use each player's average speed over the
+    last ~TREND_H hours, never a single hour. Players without that history are named, not guessed."""
     import random
     local = now_utc.astimezone(TZ)
     rnd = random.Random(local.strftime("%Y%m%d%H"))
@@ -449,32 +457,26 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
     if prev_row:
         hours = (now_utc - datetime.fromisoformat(prev_row["ts_utc"])).total_seconds() / 3600
     cur_rates = rates(cur_by, prev_by, hours)
-    prev_rates = {}
-    if pp_row and prev_row:
-        h2 = (datetime.fromisoformat(prev_row["ts_utc"])
-              - datetime.fromisoformat(pp_row["ts_utc"])).total_seconds() / 3600
-        prev_rates = rates(prev_by, pp_by, h2)
-    trend_r, trend_h = {}, 0
+    trend_r, trend_h, trend_by = {}, 0, {}
     if trend:
-        trend_h = trend[2]
-        trend_r = rates(cur_by, trend[1], trend_h)
+        trend_by, trend_h = trend[1], trend[2]
+        trend_r = rates(cur_by, trend_by, trend_h)
+    win = (f"{trend_h:.0f}h" if trend_h >= 1 else dhm(trend_h)) if trend_r else ""
     me = find_me(cur_rows)
     by_rank = {r["rank"]: r for r in cur_rows}
     lead = cur_rows[0]
+    u = lead["unit"]
     T = hours_left(now_utc)
 
-    def rate_now(r):
+    def last(r):
         x = cur_rates.get(r["name"].lower()) if r else None
         return x[1] if x else None
 
-    def speed(r):
-        """Steadier speed for projections: trend average if known, else the last interval."""
-        x = trend_r.get(r["name"].lower())
-        if x is not None:
-            return max(0.0, x[1]), f"{dhm(trend_h)} avg"
-        n = rate_now(r)
-        return (max(0.0, n), "last reading") if n is not None else (None, "")
+    def avg(r):
+        x = trend_r.get(r["name"].lower()) if r else None
+        return max(0.0, x[1]) if x else None
 
+    # ------------------------------------------------ the board
     shown, hidden = list(cur_rows[:SHOW_N]), 0
     if me and me["rank"] > SHOW_N:
         extra = []
@@ -484,178 +486,224 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
         extra.append(me)
         hidden = extra[0]["rank"] - SHOW_N - 1
         shown += extra
-    sub = (f"vs reading {hm(hours)} ago" + ("  ·  ⚠️ missed checks" if hours > 1.5 else "")
-           if prev_row else "Baseline saved - gains start next check")
+    sub = (f"right = gap to #1  ·  tags = last hour vs {win} average" if win else "right = gap to #1")
+    if prev_row and hours > 1.5:
+        sub += "  ·  ⚠️ missed checks"
+    if not prev_row:
+        sub = "Baseline saved - gains start next check"
 
-    players, spikes = [], []
+    players = []
     for r in shown:
         k = r["name"].lower()
-        p = prev_by.get(k) if prev_by else None
-        d = {"rank": r["rank"], "name": r["name"], "me": r is me,
-             "move": (p["rank"] - r["rank"]) if p is not None else 0,
+        old = trend_by.get(k)
+        d = {"rank": r["rank"], "name": r["name"], "me": r is me, "move": 0, "new": False,
              "value": f"{sh(r['value'])} {r['unit']}".strip(), "delta": "", "tag": None, "gap": "",
              "hidden_before": 0}
-        if r["unit"] == lead["unit"]:
-            if r["rank"] == 1 and len(cur_rows) > 1 and cur_rows[1]["unit"] == r["unit"]:
+        if trend_by:
+            if old is not None:
+                d["move"] = old["rank"] - r["rank"]
+            elif r["rank"] <= STORE_N:
+                d["new"] = True  # was not even in the stored top STORE_N
+        if r["unit"] == u:
+            if r["rank"] == 1 and len(cur_rows) > 1 and cur_rows[1]["unit"] == u:
                 d["gap"] = f"**+{sh(r['value'] - cur_rows[1]['value'])}** lead"
             elif r["rank"] > 1:
                 d["gap"] = f"**-{sh(lead['value'] - r['value'])}**"
-        if k in cur_rates:
-            g, rate, pct = cur_rates[k]
-            arrow = ""
-            pr = prev_rates.get(k)
-            if g == 0:
+        g = cur_rates.get(k)
+        a = avg(r)
+        if g is not None:
+            l = g[1]
+            if g[0] == 0:
                 d["tag"] = "SLEEPING"
-            elif pr and pr[1] > 0 and rate > 0:
-                if rate >= 2 * pr[1]:
+            elif a and a > 0 and l > 0:
+                if l >= 2 * a:
                     d["tag"] = "ON FIRE"
-                    spikes.append((r["name"], rate / pr[1]))
-                elif rate > pr[1] * 1.1:
-                    d["tag"], arrow = "SURGING", " ↑"
-                elif rate < pr[1] * 0.9:
-                    d["tag"], arrow = "COOLING", " ↓"
-            d["delta"] = f"{sh(g, True)} \u00B7 {sh(rate)}/h{arrow}" + (
-                f" \u00B7 {pct:+.2f}%" if pct is not None else "")
+                elif l >= 1.25 * a:
+                    d["tag"] = "SURGING"
+                elif l <= 0.6 * a:
+                    d["tag"] = "COOLING"
+        bits = []
+        if g is not None:
+            bits.append(f"1h {sh(g[0], True)}")
+        if a is not None:
+            bits.append(f"{win} avg {sh(a)}/h")
+        d["delta"] = " · ".join(bits)
         players.append(d)
     if hidden > 0 and len(players) > SHOW_N:
         players[SHOW_N]["hidden_before"] = hidden
 
-    # ------------------------------------------------ the story (what is going on right now)
-    color, title, story = 0x5865F2, "\U0001F3AF You", []
-    verdict = []   # the endgame block
+    # ------------------------------------------------ top 10: what happened and what's coming
+    race = []
+    pool = [r for r in cur_rows[:STORE_N + 1] if r["unit"] == u]
+    nodata = [r["name"] for r in pool[:10] if avg(r) is None]
+    if trend_by:
+        old_top = sorted((r for r in trend_by.values() if r["rank"] <= 10), key=lambda r: r["rank"])
+        now_top = {r["name"].lower() for r in pool[:10]}
+        for r in pool[:10]:
+            o = trend_by.get(r["name"].lower())
+            if o is None or o["rank"] > 10:
+                was = f"#{o['rank']}" if o is not None else "outside the top 10"
+                race.append(f"\U0001F195 **{r['name']}** entered the top 10 → now **#{r['rank']}** (was {was} {win} ago)")
+        for o in old_top:
+            if o["name"].lower() not in now_top:
+                c = cur_by.get(o["name"].lower())
+                race.append(f"\U0001F4E4 **{o['name']}** fell out of the top 10 (#{o['rank']} → "
+                            f"{'#' + str(c['rank']) if c is not None else 'below #' + str(STORE_N)})")
+        moves = [(trend_by[r["name"].lower()]["rank"] - r["rank"], r) for r in pool[:10]
+                 if r["name"].lower() in trend_by and trend_by[r["name"].lower()]["rank"] <= 10]
+        up = max(moves, key=lambda m: m[0], default=None)
+        dn = min(moves, key=lambda m: m[0], default=None)
+        if up and up[0] >= 2:
+            race.append(f"\U0001F4C8 Biggest climber: **{up[1]['name']}** +{up[0]} places in {win} (now #{up[1]['rank']})")
+        if dn and dn[0] <= -2:
+            race.append(f"\U0001F4C9 Biggest drop: **{dn[1]['name']}** {dn[0]} places in {win} (now #{dn[1]['rank']})")
+
+    sp = [(avg(r), r) for r in pool[:10] if avg(r) is not None]
+    if sp:
+        f = max(sp, key=lambda x: x[0])
+        race.append(f"⚡ Fastest in the top 10: **{f[1]['name']}** (#{f[1]['rank']}) · {sh(f[0])}/h over {win}")
+        idle = [r["name"] for a, r in sp if a == 0]
+        if idle:
+            race.append(f"\U0001F634 No gain at all in {win}: {_names(idle)}")
+
+    # overtakes that happen before the end at current (window-average) speeds
+    passes = []
+    for i in range(len(pool) - 1):
+        hi, lo = pool[i], pool[i + 1]
+        sa, sb = avg(hi), avg(lo)
+        if sa is None or sb is None or sb <= sa:
+            continue
+        eta = (hi["value"] - lo["value"]) / (sb - sa)
+        if T is None or eta <= T:
+            passes.append((eta, lo, hi, sb, sa))
+    passes.sort(key=lambda x: x[0])
+    if passes:
+        race.append("")
+        race.append(f"**\U0001F51C Overtakes coming** *(at {win} average speeds)*")
+        for eta, lo, hi, sb, sa in passes[:4]:
+            race.append(f"• **{lo['name']}** (#{lo['rank']}) passes **{hi['name']}** (#{hi['rank']}) in **~{dhm(eta)}**"
+                        f"\n {sh(sb)}/h vs {sh(sa)}/h")
+
+    # projected final order (only players with a known average speed)
+    if T and sp:
+        known = [r for r in pool if avg(r) is not None]
+        proj = sorted(known, key=lambda r: -(r["value"] + avg(r) * T))
+        final = {r["name"]: i + 1 for i, r in enumerate(proj)}
+        cur_place = {r["name"]: i + 1 for i, r in enumerate(known)}  # same set, so places are comparable
+        lines = []
+        for r in known:
+            a, b = cur_place[r["name"]], final[r["name"]]
+            if b < a and b <= 10:
+                passed = [x for x in known if cur_place[x["name"]] < a and final[x["name"]] > b]
+                who = ", ".join(f"**{x['name']}** ({sh(avg(x))}/h)" for x in passed[:2])
+                if len(passed) > 2:
+                    who += f" +{len(passed) - 2} more"
+                lines.append(f"\U0001F53A **{r['name']}** #{r['rank']} → **#{r['rank'] - (a - b)}**"
+                             f" · {sh(avg(r))}/h" + (f"\n passes {who}" if who else ""))
+            elif b > a and a <= 10:
+                lines.append(f"\U0001F53B **{r['name']}** #{r['rank']} → #{r['rank'] + (b - a)}"
+                             + (" (out of the top 10)" if r["rank"] <= 10 < r["rank"] + (b - a) else ""))
+        race.append("")
+        race.append(f"**\U0001F52E Final top 10 if everyone keeps their {win} pace**")
+        race += lines[:7] if lines else ["• No changes: every place holds until the end."]
+    if nodata and len(nodata) == len(pool[:10]):
+        race.append("ℹ️ Not enough history yet - predictions start after a few hourly checks.")
+    elif nodata:
+        race.append(f"ℹ️ No {win or 'trend'} history yet for {_names(nodata)}, so they're left out of predictions.")
+
+    # ------------------------------------------------ you
+    color, title, story, verdict = 0x5865F2, "\U0001F3AF You", [], []
     if not me:
         story.append(f"\U0001F50D **{ME}** isn't in the {len(cur_rows)} ranks I could load - I'll look again next check.")
     else:
-        mr, u = me["rank"], me["unit"]
-        mrate = rate_now(me)
-        pm_row = prev_by.get(me["name"].lower()) if prev_by else None
-        moved = pm_row["rank"] if pm_row is not None else None
+        mr = me["rank"]
+        ms = avg(me)
         if mr == 1:
             title = rnd.choice(["\U0001F451 Long live the king!", "\U0001F451 Still on the throne",
                                 "\U0001F451 The crown suits you", f"\U0001F451 {TITLE} royalty"])
             color = 0xF1C40F
-            rv = cur_rows[1] if len(cur_rows) > 1 else None
-            if rv and rv["unit"] == u:
-                gap = me["value"] - rv["value"]
-                story.append(f"**{rv['name']}** is **{sh(gap)} {u}** behind you.")
-                rr = rate_now(rv)
-                if mrate is not None and rr is not None:
-                    diff = rr - mrate
-                    if diff > 0:
-                        color = 0xFEE75C
-                        eta = _eta(gap, diff)
-                        story.append(f"\U0001F62C Right now they're growing **{sh(diff)}/h** faster than you" +
-                                     (f" - at that pace they pass you in **~{eta}**." if eta else "."))
-                    elif diff < 0:
-                        story.append(f"\U0001F60E You're out-farming them by **{sh(-diff)}/h** right now.")
-                    else:
-                        story.append("\U0001F91D Same speed as #2 right now - the gap holds.")
         else:
             title = rnd.choice(["\U0001F3C3 The chase is on", "\U0001F3AF Eyes on the crown",
                                 "\U0001F331 Growing toward the top", "\U0001F52D Crown in sight"])
-            if lead["unit"] == u:
-                gap = lead["value"] - me["value"]
-                story.append(f"You're **#{mr}** - **{sh(gap)} {u}** behind **{lead['name']}** (**{me['value'] / lead['value'] * 100:.0f}%** of their total).")
-                lr = rate_now(lead)
-                if mrate is not None and lr is not None:
-                    diff = mrate - lr
-                    if diff > 0:
-                        color = 0x57F287
-                        eta = _eta(gap, diff)
-                        story.append(f"\U0001F680 You're closing in at **{sh(diff)}/h**" +
-                                     (f" - crown in **~{eta}** if both keep this pace!" if eta else "."))
-                    elif diff == 0:
-                        story.append("\U0001F91D Same speed as #1 - the gap holds.")
-                    else:
-                        color = 0xED4245
-                        story.append(f"\U0001F40C #1 is pulling away by **{sh(-diff)}/h** - "
-                                     f"you need **+{sh(-diff)}/h** just to hold the gap.")
-            ab = by_rank.get(mr - 1)
-            if ab and ab is not lead and ab["unit"] == u:
-                ar = rate_now(ab)
-                eta = _eta(ab["value"] - me["value"], (mrate - ar) if mrate is not None and ar is not None else None)
-                story.append(f"\U0001F4CD Next target: **{ab['name']}** (#{ab['rank']}), {sh(ab['value'] - me['value'])} ahead" +
-                             (f" - you pass them in **~{eta}**." if eta else "."))
-            if mr > SHOW_N:
-                f5 = by_rank.get(SHOW_N)
-                if f5 and f5["unit"] == u:
-                    story.append(f"\U0001F6A7 {mr - SHOW_N} places and **{sh(f5['value'] - me['value'])}** from the top {SHOW_N}.")
-        bl = by_rank.get(mr + 1)
-        if mr != 1 and bl and bl["unit"] == u and mrate is not None and rate_now(bl) is not None and rate_now(bl) > mrate:
-            eta = _eta(me["value"] - bl["value"], rate_now(bl) - mrate)
-            if eta:
-                story.append(f"\U0001F440 **{bl['name']}** (#{bl['rank']}) is gaining on you - passes you in **~{eta}**.")
-        if moved and moved != mr:
-            n = abs(moved - mr)
-            story.append((f"\U0001F4C8 You climbed **{n}** place{'s' * (n != 1)} since last check!") if moved > mr
-                         else (f"\U0001F4C9 You slipped **{n}** place{'s' * (n != 1)} since last check."))
-        for name, x in spikes[:2]:
-            story.append(f"\U0001F525 **{name}** is on a farming spree - {x:.1f}x faster than last reading.")
+        if me["unit"] == u:
+            if mr == 1 and len(cur_rows) > 1:
+                story.append(f"You're **#1**, **{sh(me['value'] - cur_rows[1]['value'])}** ahead of **{cur_rows[1]['name']}**.")
+            elif mr > 1:
+                story.append(f"You're **#{mr}**, **{sh(lead['value'] - me['value'])}** behind **{lead['name']}** "
+                             f"({me['value'] / lead['value'] * 100:.0f}% of their total).")
+        if ms is not None:
+            story.append(f"\U0001F4CA Your {win} average: **{sh(ms)}/h**" +
+                         (f" (last hour {sh(last(me))}/h)" if last(me) is not None else ""))
+        m2 = by_rank.get(mr + 1)
+        if trend_by and me["name"].lower() in trend_by:
+            mv = trend_by[me["name"].lower()]["rank"] - mr
+            if mv:
+                story.append(f"\U0001F4C8 Up **{mv}** place{'s' * (abs(mv) != 1)} in {win}." if mv > 0
+                             else f"\U0001F4C9 Down **{-mv}** place{'s' * (abs(mv) != 1)} in {win}.")
 
-        # -------------------------------------------- endgame: can anyone still pass / can I still catch #1?
-        ms, label = speed(me)
-        if T and ms is not None:
-            verdict.append(f"⏳ **{dhm(T)} left** - projections use each player's **{label}** speed.")
-            same = [r for r in cur_rows if r["unit"] == u and r is not me]
-            proj = {r["name"]: r["value"] + (speed(r)[0] or 0) * T for r in same + [me]}
-            my_final = proj[me["name"]]
-            order = sorted(proj, key=lambda n: -proj[n])
-            place = order.index(me["name"]) + 1
-            medal = {1: "\U0001F947 ", 2: "\U0001F948 ", 3: "\U0001F949 "}.get(place, "")
-            verdict.append(f"\U0001F52E Projected finish: {medal}**#{place}** with ~**{sh(my_final)} {u}**.")
+        # -------------------------------------------- endgame
+        if T and ms is not None and me["unit"] == u:
+            known = [r for r in cur_rows[:STORE_N + 1] if r["unit"] == u and avg(r) is not None]
+            if me not in known:
+                known.append(me)
+            fin = {r["name"]: r["value"] + avg(r) * T for r in known}
+            place = sorted(fin, key=lambda n: -fin[n]).index(me["name"]) + 1
+            medal = {1: "\U0001F947", 2: "\U0001F948", 3: "\U0001F949"}.get(place, "\U0001F52E")
+            verdict.append(f"{medal} You finish **#{place}** with ~**{sh(fin[me['name']])} {u}**")
             if mr == 1:
-                best = None  # the most dangerous rival = needs the smallest speed-up to catch me
-                for r in same:
-                    rs = speed(r)[0]
-                    need = (me["value"] - r["value"]) / T + ms  # their required speed to tie at the end
-                    mult = need / rs if rs and rs > 0 else float("inf")
-                    if best is None or mult < best[0]:
-                        best = (mult, r, need)
-                if best:
-                    mult, rv, need = best
-                    if mult == float("inf"):
-                        verdict.append(f"\U0001F512 **Locked in.** Nobody is growing fast enough to matter - {rv['name']} would have to wake up first.")
-                    elif mult > 5:
-                        verdict.append(f"\U0001F512 **Practically locked.** **{rv['name']}** would need **{mult:.1f}x** their current speed "
-                                       f"({sh(need)}/h) for the rest of the event. They can't realistically pass you anymore.")
-                    elif mult > 2:
-                        verdict.append(f"✅ **Comfortable.** **{rv['name']}** needs **{mult:.1f}x** their speed ({sh(need)}/h) to catch you - possible, but a big ask.")
+                threats = []
+                for r in known:
+                    if r is me or not avg(r):
+                        continue
+                    need = (me["value"] - r["value"]) / T + ms
+                    threats.append((need / avg(r), r, need))
+                if threats:
+                    mult, r, need = min(threats, key=lambda x: x[0])
+                    if mult > 5:
+                        verdict.append(f"\U0001F512 **Safe.** Closest threat {r['name']} would need **{mult:.1f}×** their speed.")
                     elif mult > 1:
-                        verdict.append(f"⚠️ **Still in range!** **{rv['name']}** only needs **{mult:.1f}x** their speed ({sh(need)}/h) to pass you. Keep farming.")
+                        verdict.append(f"⚠️ **{r['name']}** can still catch you with **{mult:.1f}×** their speed ({sh(need)}/h).")
                     else:
-                        gap_end = proj[rv["name"]] - my_final
-                        verdict.append(f"\U0001F6A8 **{rv['name']} passes you before the end** at current speeds (finishes ~{sh(gap_end)} ahead). Speed up!")
-            elif lead["unit"] == u:
-                ls = speed(lead)[0] or 0
-                need = (lead["value"] - me["value"]) / T + ls
+                        verdict.append(f"\U0001F6A8 **{r['name']}** passes you before the end at this pace. Speed up!")
+            elif avg(lead) is None:
+                verdict.append(f"\U0001F451 **#1 {lead['name']}**: no {win} history yet, can't project the race for #1")
+            else:
+                need = (lead["value"] - me["value"]) / T + avg(lead)
                 mult = need / ms if ms > 0 else float("inf")
-                if mult == float("inf"):
-                    verdict.append(f"\U0001F634 **You're not gaining right now.** To finish #1 you'd need **{sh(need)}/h** - time to farm!")
-                elif mult <= 1:
-                    verdict.append(f"\U0001F680 **On course for #1** - at current speeds you finish ~{sh(my_final - proj[lead['name']])} ahead of {lead['name']}.")
-                elif mult <= 2:
-                    verdict.append(f"\U0001F4AA **Within reach.** To finish #1 you need **{sh(need)}/h** (**{mult:.1f}x** your speed).")
-                elif mult <= 5:
-                    verdict.append(f"\U0001F3D4️ **Big push needed.** You need **{sh(need)}/h** (**{mult:.1f}x** your speed) to take #1 before the end.")
+                mark = ("✅ on course" if mult <= 1 else "\U0001F4AA within reach" if mult <= 2
+                        else "\U0001F3D4️ big push" if mult <= 5 else "❌ out of reach")
+                verdict.append(f"\U0001F451 **#1 {lead['name']}**: needs **{sh(need)}/h**"
+                               + (f" = **{mult:.1f}×** your speed" if mult != float('inf') else "")
+                               + f" → {mark}")
+                ab = by_rank.get(mr - 1)
+                if ab and ab is not lead and ab["unit"] == u and avg(ab) is not None:
+                    gap, diff = ab["value"] - me["value"], ms - avg(ab)
+                    if diff > 0:
+                        eta = gap / diff
+                        ok = "✅ before the end" if eta <= T else "❌ not before the end"
+                        verdict.append(f"⬆️ **#{ab['rank']} {ab['name']}**: you pass them in ~{dhm(eta)} → {ok}")
+                    else:
+                        verdict.append(f"⬆️ **#{ab['rank']} {ab['name']}**: they're faster ({sh(avg(ab))}/h) → ❌ you won't catch them")
+            bl = m2
+            if bl and bl["unit"] == u and avg(bl) is not None:
+                diff = avg(bl) - ms
+                if diff > 0:
+                    eta = (me["value"] - bl["value"]) / diff
+                    if eta <= T:
+                        verdict.append(f"⚠️ **#{bl['rank']} {bl['name']}** passes you in **~{dhm(eta)}** → speed up to hold")
+                    else:
+                        verdict.append(f"\U0001F6E1️ **#{bl['rank']} {bl['name']}** is faster but runs out of time → you hold")
                 else:
-                    verdict.append(f"\U0001F62C **Out of reach at this pace.** You'd need **{sh(need)}/h** (**{mult:.1f}x** your speed) - unless {lead['name']} stalls.")
-            bl2 = by_rank.get(mr + 1)
-            if mr != 1 and bl2 and bl2["unit"] == u:
-                bs = speed(bl2)[0] or 0
-                need_b = (me["value"] - bl2["value"]) / T + ms
-                mult_b = need_b / bs if bs > 0 else float("inf")
-                if mult_b <= 1:
-                    verdict.append(f"\U0001F440 **{bl2['name']}** (#{bl2['rank']}) will pass you before the end at current speeds.")
-                elif mult_b <= 3:
-                    verdict.append(f"\U0001F440 **{bl2['name']}** (#{bl2['rank']}) can still reach you - needs {mult_b:.1f}x their speed.")
+                    verdict.append(f"\U0001F6E1️ **#{bl['rank']} {bl['name']}** is slower → you hold your place")
     nxt = (local + timedelta(hours=1)).replace(minute=0)
     foot = f"Next check {nxt:%H:00}" + (f"  ·  closes in {dhm(T)}" if T else "")
     return {"time": f"{local:%H:%M}", "sub": sub, "players": players, "color": color, "foot": foot,
-            "title": title, "story": story, "verdict": verdict, "now": now_utc.isoformat()}
+            "title": title, "story": story, "verdict": verdict, "race": race, "win": win,
+            "left": dhm(T) if T else "", "now": now_utc.isoformat()}
 
 
 def discord_message(now_utc, *args, **kw):
-    """ONE embed, text only (plus your Roblox head as a small corner picture)."""
+    """Two embeds: the board, then the analysis (top 10 race, you, endgame)."""
     d = prepare(now_utc, *args, **kw)
     rows = []
     for p in d["players"]:
@@ -664,25 +712,35 @@ def discord_message(now_utc, *args, **kw):
         head = f"{MEDALS.get(p['rank'], '`#' + str(p['rank']) + '`')} **{p['name']}**"
         if p["me"]:
             head += "  \U0001F448 **you**"
-        if p["move"]:
-            head += f"  {'\U0001F53A' if p['move'] > 0 else '\U0001F53B'}{abs(p['move'])}"
+        if p["new"]:
+            head += "  \U0001F195"
+        elif p["move"]:
+            arrow = "\U0001F53A" if p["move"] > 0 else "\U0001F53B"
+            head += f"  {arrow}{abs(p['move'])}"
         if p["tag"]:
             head += f"  ·  {TAGS[p['tag']]}"
-        line2 = f"`{p['value']}`" + (f" \u00B7 {p['gap']}" if p["gap"] else "")
+        line2 = f"`{p['value']}`" + (f" · {p['gap']}" if p["gap"] else "")
         line3 = f"*{p['delta']}*" if p["delta"] else ""
         rows.append("\n".join(x for x in (head, line2, line3) if x))
-    parts = [f"*{d['sub']}  \u00B7  right = gap to #1*", "", "\n\n".join(rows), "", f"**{d['title']}**", *d["story"]]
+    board = "\n".join([f"*{d['sub']}*", f"*\U0001F53A\U0001F53B = places moved in {d['win']}*" if d["win"] else "",
+                       "", "\n\n".join(rows)])
+    emb1 = {"title": f"{EMOJI} {TITLE} leaderboard  ·  {d['time']}", "color": d["color"],
+            "description": board[:4000]}
+    parts = []
+    if d["race"]:
+        parts += [f"**\U0001F51F Top 10 · last {d['win']}**" if d["win"] else "**\U0001F51F Top 10**", *d["race"], ""]
+    parts += [f"**{d['title']}**", *d["story"]]
     if d["verdict"]:
-        parts += ["", "**\U0001F3C1 The endgame**", *d["verdict"]]
-    emb = {"title": f"{EMOJI} {TITLE} leaderboard  ·  {d['time']}", "color": d["color"],
-           "description": "\n".join(parts)[:4000], "timestamp": d["now"], "footer": {"text": d["foot"]}}
+        parts += ["", f"**\U0001F3C1 Endgame** · {d['left']} left", *d["verdict"]]
+    emb2 = {"color": d["color"], "description": "\n".join(parts)[:4000],
+            "timestamp": d["now"], "footer": {"text": d["foot"]}}
     try:
         icon = headshots([ME]).get(ME.lower())
         if icon:
-            emb["author"] = {"name": f"{ME} \u00B7 {TITLE} tracker", "icon_url": icon}
+            emb1["author"] = {"name": f"{ME} · {TITLE} tracker", "icon_url": icon}
     except Exception as e:
         print("thumbnail failed:", e)
-    return emb, None
+    return [emb1, emb2], None
 
 
 # ---------------------------------------------------------------- notify
@@ -749,7 +807,7 @@ def main(quiet_fail=False):
     prev_by = load_rows(con, prev_row["id"]) if prev_row else {}
     pp_by = load_rows(con, pp_row["id"]) if pp_row else {}
     try:
-        trend = trend_snapshot(con, now)
+        trend = trend_snapshot(con, now, TREND_H)
     except Exception as e:
         print("trend failed:", e)
         trend = None
