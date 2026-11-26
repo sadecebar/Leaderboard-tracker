@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Leaderboard Tracker - hourly race reports for Pets Universe leaderboards" width="100%">
+  <img src="assets/banner.png" alt="Leaderboard Tracker - hourly race reports for Pets Universe leaderboards" width="100%">
 </p>
 
 <p align="center">
