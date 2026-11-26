@@ -9,6 +9,8 @@ import os
 import re
 import sqlite3
 import sys
+import time
+import urllib.error
 import urllib.request
 import json
 import math
@@ -817,9 +819,26 @@ def notify(msg, embed=None, png=None):
         data, ctype = json.dumps(payload).encode(), "application/json"
     req = urllib.request.Request(WEBHOOK, data=data, headers={
         "Content-Type": ctype, "User-Agent": "pu-tracker/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        print("discord status", r.status)
-    return True
+    for attempt in range(4):  # Discord sometimes says "slow down" or hiccups - try again, don't drop the post
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                print("discord status", r.status)
+            return True
+        except urllib.error.HTTPError as ex:
+            if attempt == 3 or not (ex.code == 429 or ex.code >= 500):
+                raise
+            wait = 5 + attempt * 5
+            try:
+                wait = max(wait, float(json.loads(ex.read() or b"{}").get("retry_after") or 0) + 1)
+            except Exception:
+                pass
+            print(f"discord {ex.code}, retrying in {wait:.0f}s")
+            time.sleep(min(wait, 60))
+        except (urllib.error.URLError, TimeoutError, OSError) as ex:
+            if attempt == 3:
+                raise
+            print("discord send error, retrying:", ex)
+            time.sleep(5 + attempt * 5)
 
 
 # ---------------------------------------------------------------- main
@@ -873,6 +892,10 @@ def main(quiet_fail=False):
         notify(msg, embed, png)
     except Exception as ne:
         print("notify failed:", ne, file=sys.stderr)
+        try:  # pictures didn't make it: send the plain text report so the hour is never silently missing
+            notify(msg)
+        except Exception as ne2:
+            print("text fallback failed too:", ne2, file=sys.stderr)
     return 0
 
 
