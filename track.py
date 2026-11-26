@@ -828,8 +828,11 @@ def main(quiet_fail=False):
     now = datetime.now(timezone.utc)
     prevs = last_ok(con, 2)
     if prevs and not os.environ.get("FORCE"):
-        age = (now - datetime.fromisoformat(prevs[0]["ts_utc"])).total_seconds()
-        if age < MIN_GAP_S:
+        last = datetime.fromisoformat(prevs[0]["ts_utc"])
+        age = (now - last).total_seconds()
+        same_hour = last.astimezone(TZ).strftime("%Y%m%d%H") == now.astimezone(TZ).strftime("%Y%m%d%H")
+        # only a repeat within the SAME hour is a duplicate - a restart at :52 must never block the :00 check
+        if age < MIN_GAP_S and same_hour:
             print(f"snapshot {int(age)}s ago exists - skipping duplicate run")
             return 0
     try:
