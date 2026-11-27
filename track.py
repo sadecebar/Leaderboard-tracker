@@ -194,6 +194,33 @@ def fetch_war():
     return rows
 
 
+# TRACK_SOURCE=board: any board from the site's API (r=boards, top 50), set by TRACK_BOARD_ID
+# (e.g. TgBreakables). If I'm below the top 50, my place comes from my profile; the site doesn't
+# share my count there, so I'm shown as a place only.
+BOARD_ID = os.environ.get("TRACK_BOARD_ID", "").strip()
+OFFBOARD = {}  # my place when I'm outside the rows the site shares
+
+
+def fetch_api_board():
+    d = _api("r=boards")
+    b = next((x for x in d.get("boards") or [] if x.get("id") == BOARD_ID), None)
+    if not b or not b.get("rows"):
+        raise RuntimeError(f"board {BOARD_ID!r} is not on the site right now")
+    rows = [{"rank": i, "name": x.get("n") or "?", "raw": str(x.get("v")),
+             "value": float(x.get("v") or 0), "unit": ""} for i, x in enumerate(b["rows"], 1)]
+    OFFBOARD.clear()
+    if not find_me(rows):
+        try:
+            rk = _api(f"r=player&id={my_uid()}")["player"].get("ranks") or {}
+            if rk.get(BOARD_ID + "Info"):
+                OFFBOARD.update(rank=int(rk[BOARD_ID + "Info"]), of=rk.get(BOARD_ID + "InfoTotal"),
+                                last=rows[-1])
+        except Exception as e:
+            print("my profile failed:", str(e)[:120])
+    print(f"board {BOARD_ID}: {len(rows)} rows, me: {find_me(rows)}, off board: {OFFBOARD.get('rank')}")
+    return rows
+
+
 def parse_board(text, lenient=False):
     """Rows look like: rank / username / value (e.g. 7.59e+25vg)."""
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -693,7 +720,13 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
 
     # ------------------------------------------------ you
     color, title, story, verdict = 0x5865F2, "\U0001F3AF You", [], []
-    if not me:
+    if not me and OFFBOARD.get("rank"):  # below the rows the site shares: place only
+        lb = OFFBOARD["last"]
+        of = f" of {OFFBOARD['of']:,}" if OFFBOARD.get("of") else ""
+        story.append(f"\U0001F4CD **{ME}** is **#{OFFBOARD['rank']}**{of}. The site only shares counts for the "
+                     f"top {len(cur_rows)}, so your speed shows once you're in it. To get in, pass "
+                     f"#{lb['rank']} **{lb['name']}** at **{sh(lb['value'])}**.")
+    elif not me:
         story.append(f"\U0001F50D **{ME}** isn't in the {len(cur_rows)} ranks I could load - I'll look again next check.")
     else:
         mr = me["rank"]
@@ -805,6 +838,8 @@ def discord_message(now_utc, *args, **kw):
     if WAR.get("tag"):  # clan war: rewards go by clan place, so show my clan too
         d["clan"] = (f"🛡️ {WAR['tag']} clan #{WAR['rank']} · {sh(WAR.get('points') or 0)} pts"
                      + (f" · you {WAR['share']:g}%" if WAR.get("share") is not None else ""))
+    elif OFFBOARD.get("rank"):  # below the top 50: only my place is known
+        d["clan"] = f"📍 you #{OFFBOARD['rank']}" + (f" of {OFFBOARD['of']:,}" if OFFBOARD.get("of") else "")
     rows = []
     for p in d["players"]:
         if p["hidden_before"]:
@@ -924,6 +959,8 @@ def main(quiet_fail=False):
     try:
         if SOURCE == "war":
             rows = fetch_war()
+        elif SOURCE == "board":
+            rows = fetch_api_board()
         else:
             text = fetch_text()
             rows = list(COLLECTED) or parse_board(text)

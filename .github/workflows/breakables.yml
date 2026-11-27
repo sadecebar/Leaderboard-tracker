@@ -1,0 +1,69 @@
+name: breakables-runner
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # backup restarter only; the job normally restarts itself
+  workflow_dispatch:
+    inputs:
+      preview:
+        description: "Send a test Breakables report now and stop"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: breakables-runner
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      # ---- leaderboard settings: for a new board, change only this block ----
+      # A second tracker next to track.yml, with its own history file and its own run queue.
+      TRACK_BOARD: "Thanksgiving Breakables"   # tab name on petsuniverse.org/players
+      TRACK_BOARD_ID: "TgBreakables"   # the board's id in the site API (r=boards)
+      TRACK_SOURCE: "board"            # "board" = read TRACK_BOARD_ID from the site API (top 50 + your place from your profile)
+      TRACK_TITLE: "Breakables"        # shown as "<TITLE> leaderboard"
+      TRACK_EMOJI: "🦃"
+      TRACK_MIN_EXP: "0"               # wrong-board guard off: counts are small
+      TRACK_DB: "data/breakables.db"   # use a NEW file per board so histories don't mix
+      TRACK_USER: "imnotsadece"
+      TRACK_EVERY_MIN: "60"            # report every N minutes (60 = hourly)
+      STOP_AT: ""                      # end time unknown yet: set it when the event's end is announced
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check stop time
+        id: gate
+        run: |
+          if [ -n "$STOP_AT" ] && [ "$(date -u +%s)" -ge "$(date -d "$STOP_AT" +%s)" ]; then
+            echo "done=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "done=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.done != 'true'
+        with:
+          python-version: "3.12"
+      - name: Install browser
+        if: steps.gate.outputs.done != 'true'
+        run: pip install playwright pillow && playwright install --with-deps chromium
+      - name: Run tracker loop
+        id: loop
+        if: steps.gate.outputs.done != 'true'
+        run: python -u runner.py   # -u: log lines appear immediately
+        env:
+          HATCH_QUERY: ${{ secrets.HATCH_QUERY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          FLOWER_WEBHOOK_URL: ${{ secrets.FLOWER_WEBHOOK_URL }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+          PREVIEW: ${{ inputs.preview }}
+      - name: Start the next run
+        if: ${{ !cancelled() && inputs.preview != true && steps.gate.outputs.done != 'true' && steps.loop.outputs.done != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run "${{ github.workflow }}" --ref "${{ github.ref_name }}"

@@ -20,6 +20,7 @@
 
 | Date | Update |
 |---|---|
+| **27 Nov 2026** | 🦃 Also tracking **Thanksgiving Breakables** every hour, as a second tracker (`breakables.yml`). Below the top 50 it shows your place and what it takes to get in |
 | **27 Nov 2026** | ⚔️ Now tracking **Clan War #3**, every **30 minutes**: your place even outside the top 100, plus your clan's place and points |
 | **27 Nov 2026** | 🤖 **Want your own?** Send the repo link to any AI chatbot and ask it to set it up: there's now a step-by-step guide written for it |
 | **26 Nov 2026** | 🔁 Discord posts are retried if Discord hiccups, with a text report as backup, so no hour is ever silently missing |
@@ -83,7 +84,8 @@ Everything board-specific lives in **one block** at the top of `.github/workflow
 | `TRACK_MIN_EXP` | `20` | sanity check: the #1 value must be at least 10^20 |
 | `TRACK_DB` | `data/tracker.db` | history file. **Use a new file for each board** |
 | `TRACK_USER` | your Roblox name | the player to follow |
-| `TRACK_SOURCE` | `war` | `war` = a Clan War board, read from the site's API (finds you even below #100, and shows your clan); `page` = any other tab |
+| `TRACK_SOURCE` | `war` | `war` = a Clan War board, read from the site's API (finds you even below #100, and shows your clan); `board` = a board from the site's API by `TRACK_BOARD_ID` (top 50, plus your place if you're below it); `page` = any other tab |
+| `TRACK_BOARD_ID` | `TgBreakables` | only for `board`: the board's id in the site's API |
 | `TRACK_EVERY_MIN` | `30` | how often to report, in minutes (`60` = hourly) |
 | `STOP_AT` | `2026-12-04T19:00:00+01:00` | when the event ends (sends a final message, then stops) |
 
