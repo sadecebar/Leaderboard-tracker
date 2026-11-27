@@ -115,12 +115,13 @@ def build_board(d, heads, sh, board, emoji):
                     f'<div class="sub">{e(gap)} {tag}</div><div class="spd">{spd}</div></div>'
                     f'<div class="val">{e(val)}<small>{e(unit)}</small></div></div>')
     ends = f'<span class="chip end">⏳ ends in {e(d["left"])}</span>' if d.get("left") else ""
+    clan = f'<span class="chip end">{e(d["clan"])}</span>' if d.get("clan") else ""
     speed_note = f'<span class="chip">bars = {e(d["win"])} average speed</span>' if d.get("win") else ""
     return _page(f'''<div class="card">
  <div class="top"><div class="tag">LEADERBOARD</div><div class="when">{e(d["date"])} · {e(d["time"])}</div></div>
- <h1>{e(emoji)} {e(board)}</h1><div class="meta">{ends}{speed_note}</div>
+ <h1>{e(emoji)} {e(board)}</h1><div class="meta">{clan}{ends}{speed_note}</div>
  {"".join(rows)}
- <div class="foot"><span>Tracking the top 15 every hour</span><span>Pets Universe · Leaderboard Tracker</span></div>
+ <div class="foot"><span>Tracking the top 15 every {e(d.get("every") or "hour")}</span><span>Pets Universe · Leaderboard Tracker</span></div>
 </div>''')
 
 
@@ -157,7 +158,7 @@ def build_analysis(d, heads):
         left = f' · {e(d["left"])} left' if d.get("left") else ""
         secs.append(f'<h2>\U0001F3C1 Your endgame{left}</h2><div class="box">{ch}</div>')
     if A.get("all_nodata"):
-        secs.append('<div class="note">ℹ️ Not enough history yet - predictions start after a few hourly checks.</div>')
+        secs.append('<div class="note">ℹ️ Not enough history yet - predictions start after a few checks.</div>')
     elif A.get("nodata"):
         secs.append(f'<div class="note">ℹ️ No {e(win)} history yet for {e(", ".join(A["nodata"]))}, so they are left out of predictions.</div>')
     return _page(f'''<div class="card">

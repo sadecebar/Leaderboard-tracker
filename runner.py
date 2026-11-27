@@ -81,7 +81,7 @@ def flower_overdue():
         if not prev:
             return True
         age = (datetime.now(ZoneInfo("UTC")) - datetime.fromisoformat(prev[0]["ts_utc"])).total_seconds()
-        return age > 50 * 60
+        return age > (track.EVERY_MIN - 10) * 60
     except Exception:
         return False
 
@@ -105,14 +105,15 @@ def main():
     while time.time() - start < RUN_FOR:
         t0 = time.time()
         now = datetime.now(TZ)
-        hour_key = now.strftime("%Y-%m-%d %H")
+        hour_key = track.slot(now) if track else now.strftime("%Y-%m-%d %H")  # one check per slot (hour, or 30 min...)
+        at_start = now.minute % (track.EVERY_MIN if track else 60) < 5
         first = last_hour is None
         if first:
             overdue = bool(track) and flower_overdue()
-            last_hour = hour_key if not (now.minute < 5 or overdue) else None
+            last_hour = hour_key if not (at_start or overdue) else None
         else:
             overdue = False
-        due_hour = bool(track) and ((now.minute < 5 and hour_key != last_hour) or overdue)
+        due_hour = bool(track) and ((at_start and hour_key != last_hour) or overdue)
         due_retry = bool(track) and retry_at is not None and time.time() >= retry_at
         if due_hour or due_retry:
             if due_hour:

@@ -30,6 +30,13 @@ SHOW_N = 10     # rows shown in the report
 STORE_N = 15    # rows stored per snapshot (plus me, wherever I am) - #11-15 show who may enter/leave the top 10
 TREND_H = float(os.environ.get("TRACK_TREND_H", "12"))  # judgements use average speed over this window
 MIN_GAP_S = 600  # ignore a second run within 10 min (duplicate guard)
+EVERY_MIN = max(5, min(60, int(os.environ.get("TRACK_EVERY_MIN", "60"))))  # report every N minutes (60, 30, 20, 15...)
+
+
+def slot(dt):
+    """Which reporting slot a moment belongs to, e.g. '2026112720-1' = 20:30-20:59 when reporting every 30 min."""
+    l = dt.astimezone(TZ)
+    return l.strftime("%Y%m%d%H") + f"-{l.minute // EVERY_MIN}"
 MIN_EXP = int(os.environ.get("TRACK_MIN_EXP", "20"))  # flower totals are ~e+25
 VAL_RE = re.compile(r"^(\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*([A-Za-z]{0,8})$")
 
@@ -129,6 +136,62 @@ def fetch_text():
             f.write(text)
         b.close()
     return text
+
+
+# ---------------------------------------------------------------- clan war (site API)
+# TRACK_SOURCE=war: the Clan War board comes from the site's API instead of the page. The page only
+# lists the top 100 players, so my own place and points come from my player profile.
+SOURCE = os.environ.get("TRACK_SOURCE", "page").strip().lower()
+API = "https://petsuniverse.org/api/public.php?"
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0 Safari/537.36")
+WAR = {}  # my clan's standing, shown on the board picture
+
+
+def _api(q):
+    req = urllib.request.Request(API + q, headers={"User-Agent": BROWSER_UA, "Referer": URL,
+                                                   "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        d = json.load(r)
+    if not d.get("ok"):
+        raise RuntimeError(f"site API said not ok for {q.split('&')[0]}")
+    return d
+
+
+def my_uid():
+    req = urllib.request.Request("https://users.roblox.com/v1/usernames/users",
+                                 data=json.dumps({"usernames": [ME], "excludeBannedUsers": False}).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = json.load(r)["data"]
+    if not data:
+        raise RuntimeError(f"Roblox user {ME!r} not found")
+    return data[0]["id"]
+
+
+def fetch_war():
+    """Clan War board: top 100 players + me (from my profile, wherever I am)."""
+    d = _api("r=warplayers")
+    lst = d.get("list") or []
+    if not lst:
+        raise RuntimeError("the war board is empty (war not started yet?)")
+    rows = [{"rank": i, "name": x.get("n") or x.get("d") or "?", "raw": str(x.get("p")),
+             "value": float(x.get("p") or 0), "unit": ""} for i, x in enumerate(lst, 1)]
+    WAR.clear()
+    try:
+        p = _api(f"r=player&id={my_uid()}")
+        w = p.get("war") or {}
+        c = w.get("clan") or {}
+        if c:
+            WAR.update(tag=c.get("tag"), name=c.get("name"), rank=c.get("rank"), points=c.get("points"),
+                       share=w.get("share"), players=w.get("players"))
+        if w.get("place") and not find_me(rows):
+            rows.append({"rank": int(w["place"]), "name": p["player"]["name"], "raw": str(w.get("points")),
+                         "value": float(w.get("points") or 0), "unit": ""})
+    except Exception as e:  # the board itself is still worth saving
+        print("my war profile failed:", str(e)[:120])
+    print(f"war board: {len(lst)} players, me: {find_me(rows)}, clan: {WAR}")
+    return rows
 
 
 def parse_board(text, lenient=False):
@@ -355,7 +418,7 @@ def sh(v, signed=False):
     sign = ("-" if v < 0 else "+") if signed else ("-" if v < 0 else "")
     av = abs(v)
     if av < 999.995:
-        return f"{sign}{av:.2f}"
+        return f"{sign}{int(av)}" if float(av).is_integer() else f"{sign}{av:.2f}"  # points: 784, not 784.00
     e = int(math.floor(math.log10(av))) // 3
     mant = av / 10 ** (3 * e)
     if round(mant, 2) >= 1000:
@@ -488,7 +551,7 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
         extra.append(me)
         hidden = extra[0]["rank"] - SHOW_N - 1
         shown += extra
-    sub = (f"right = gap to #1  ·  tags = last hour vs {win} average" if win else "right = gap to #1")
+    sub = (f"right = gap to #1  ·  tags = last check vs {win} average" if win else "right = gap to #1")
     if prev_row and hours > 1.5:
         sub += "  ·  ⚠️ missed checks"
     if not prev_row:
@@ -624,7 +687,7 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
         race.append(f"**\U0001F52E Final top 10 if everyone keeps their {win} pace**")
         race += lines[:7] if lines else ["• No changes: every place holds until the end."]
     if nodata and len(nodata) == len(pool[:10]):
-        race.append("ℹ️ Not enough history yet - predictions start after a few hourly checks.")
+        race.append("ℹ️ Not enough history yet - predictions start after a few checks.")
     elif nodata:
         race.append(f"ℹ️ No {win or 'trend'} history yet for {_names(nodata)}, so they're left out of predictions.")
 
@@ -738,6 +801,10 @@ def prepare(now_utc, cur_rows, cur_by, prev_row, prev_by, pp_by, pp_row, trend=N
 def discord_message(now_utc, *args, **kw):
     """Two embeds: the board, then the analysis (top 10 race, you, endgame)."""
     d = prepare(now_utc, *args, **kw)
+    d["every"] = "hour" if EVERY_MIN >= 60 else f"{EVERY_MIN} min"
+    if WAR.get("tag"):  # clan war: rewards go by clan place, so show my clan too
+        d["clan"] = (f"🛡️ {WAR['tag']} clan #{WAR['rank']} · {sh(WAR.get('points') or 0)} pts"
+                     + (f" · you {WAR['share']:g}%" if WAR.get("share") is not None else ""))
     rows = []
     for p in d["players"]:
         if p["hidden_before"]:
@@ -849,14 +916,17 @@ def main(quiet_fail=False):
     if prevs and not os.environ.get("FORCE"):
         last = datetime.fromisoformat(prevs[0]["ts_utc"])
         age = (now - last).total_seconds()
-        same_hour = last.astimezone(TZ).strftime("%Y%m%d%H") == now.astimezone(TZ).strftime("%Y%m%d%H")
-        # only a repeat within the SAME hour is a duplicate - a restart at :52 must never block the :00 check
+        same_hour = slot(last) == slot(now)
+        # only a repeat within the SAME slot is a duplicate - a restart at :52 must never block the :00 check
         if age < MIN_GAP_S and same_hour:
             print(f"snapshot {int(age)}s ago exists - skipping duplicate run")
             return 0
     try:
-        text = fetch_text()
-        rows = list(COLLECTED) or parse_board(text)
+        if SOURCE == "war":
+            rows = fetch_war()
+        else:
+            text = fetch_text()
+            rows = list(COLLECTED) or parse_board(text)
         if [r["rank"] for r in rows[:SHOW_N]] != list(range(1, SHOW_N + 1)):
             raise RuntimeError(f"top {SHOW_N} not read cleanly (got {len(rows)} rows)")
         if exponent(rows[0]["raw"]) < MIN_EXP:

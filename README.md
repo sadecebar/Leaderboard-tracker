@@ -20,6 +20,7 @@
 
 | Date | Update |
 |---|---|
+| **27 Nov 2026** | ⚔️ Now tracking **Clan War #3**, every **30 minutes**: your place even outside the top 100, plus your clan's place and points |
 | **27 Nov 2026** | 🤖 **Want your own?** Send the repo link to any AI chatbot and ask it to set it up: there's now a step-by-step guide written for it |
 | **26 Nov 2026** | 🔁 Discord posts are retried if Discord hiccups, with a text report as backup, so no hour is ever silently missing |
 | **26 Nov 2026** | 🖼️ The hourly report is now **two pictures**: the board (top 5 + you, with Roblox avatars and speed bars) and a 12-hour analysis |
@@ -82,7 +83,9 @@ Everything board-specific lives in **one block** at the top of `.github/workflow
 | `TRACK_MIN_EXP` | `20` | sanity check: the #1 value must be at least 10^20 |
 | `TRACK_DB` | `data/tracker.db` | history file. **Use a new file for each board** |
 | `TRACK_USER` | your Roblox name | the player to follow |
-| `STOP_AT` | `2026-11-27T19:00:00+01:00` | when the event ends (sends a final message, then stops) |
+| `TRACK_SOURCE` | `war` | `war` = a Clan War board, read from the site's API (finds you even below #100, and shows your clan); `page` = any other tab |
+| `TRACK_EVERY_MIN` | `30` | how often to report, in minutes (`60` = hourly) |
+| `STOP_AT` | `2026-12-04T19:00:00+01:00` | when the event ends (sends a final message, then stops) |
 
 ## 🚀 Run your own
 
@@ -143,8 +146,10 @@ The chatbot reads the guide below and walks you through it, one click at a time.
    | `TRACK_EMOJI` | any emoji |
    | `TRACK_USER` | their Roblox name |
    | `TRACK_DB` | a **new** file name, e.g. `data/coins.db`. The existing `data/tracker.db` is the original owner's history, so never reuse it |
-   | `STOP_AT` | the end time as `YYYY-MM-DDTHH:MM:SS+01:00`. The `+01:00` is the time zone offset: Stockholm in winter is `+01:00`, New York in winter is `-05:00`. Use `""` (empty) if the board never ends. **The value already in the file is in the past, so change it or the tracker stops at once.** |
-   | `TRACK_MIN_EXP` | a safety check that it read the right board: the #1 player's value must be at least 10 to this power. If unsure, set `"0"` to turn the check off |
+   | `STOP_AT` | the end time as `YYYY-MM-DDTHH:MM:SS+01:00`. The `+01:00` is the time zone offset: Stockholm in winter is `+01:00`, New York in winter is `-05:00`. Use `""` (empty) if the board never ends. **The value in the file is the original owner's event; change it. If it's in the past, the tracker stops at once.** |
+   | `TRACK_SOURCE` | `"war"` for a Clan War board (the tab named "Clan War #…"), otherwise `"page"` |
+| `TRACK_EVERY_MIN` | how often to report: `"60"` hourly, `"30"` every half hour |
+| `TRACK_MIN_EXP` | a safety check that it read the right board: the #1 player's value must be at least 10 to this power. If unsure, set `"0"` to turn the check off |
 
 **Enable and start it**
 - In the fork, open the **Actions** tab. GitHub disables workflows in forks, so click **"I understand my workflows, go ahead and enable them"**.
