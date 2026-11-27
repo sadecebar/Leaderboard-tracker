@@ -20,6 +20,7 @@
 
 | Date | Update |
 |---|---|
+| **27 Nov 2026** | 🛡️ New **clan tracker** (`clans.py`, `clans.yml`): every hour the top 10 Clan War clans plus the clans you follow (`CLANS_FOLLOW`), even far below the top 10, with gains, speed, who they'll pass, and a verdict on how they're doing. Posts to its own channel (`CLANS_WEBHOOK_URL` secret) |
 | **27 Nov 2026** | 🎨 Each tracker has its own color, badge and header line, so the war and Thanksgiving posts are easy to tell apart (`TRACK_ACCENT`, `TRACK_LABEL`, `TRACK_HEADER`) |
 | **27 Nov 2026** | 🦃 Also tracking **Thanksgiving Breakables** every hour, as a second tracker (`breakables.yml`). Below the top 50 it shows your place and what it takes to get in |
 | **27 Nov 2026** | ⚔️ Now tracking **Clan War #3**, every **30 minutes**: your place even outside the top 100, plus your clan's place and points |
