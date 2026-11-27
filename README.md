@@ -20,6 +20,7 @@
 
 | Date | Update |
 |---|---|
+| **27 Nov 2026** | ⏱️ Clan War back to **every hour**: the site only updates war points about once an hour, so half-hour reports showed "no gain" |
 | **27 Nov 2026** | 🎨 Each tracker has its own color, badge and header line, so the war and Thanksgiving posts are easy to tell apart (`TRACK_ACCENT`, `TRACK_LABEL`, `TRACK_HEADER`) |
 | **27 Nov 2026** | 🦃 Also tracking **Thanksgiving Breakables** every hour, as a second tracker (`breakables.yml`). Below the top 50 it shows your place and what it takes to get in |
 | **27 Nov 2026** | ⚔️ Now tracking **Clan War #3**, every **30 minutes**: your place even outside the top 100, plus your clan's place and points |

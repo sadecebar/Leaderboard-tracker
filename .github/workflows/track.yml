@@ -34,7 +34,7 @@ jobs:
       TRACK_DB: "data/war3.db"         # use a NEW file per board so histories don't mix
       TRACK_USER: "imnotsadece"
       TRACK_SOURCE: "war"              # "war" = Clan War board via the site API (you + your clan, even outside the top 100); "page" = any other tab
-      TRACK_EVERY_MIN: "30"            # report every N minutes (60 = hourly)
+      TRACK_EVERY_MIN: "60"            # report every N minutes (60 = hourly). Hourly: the site updates war points about once an hour
       STOP_AT: "2026-12-04T19:00:00+01:00"   # Fri 4 Dec 19:00 Stockholm: Clan War #3 ends
     steps:
       - uses: actions/checkout@v4
