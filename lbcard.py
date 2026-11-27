@@ -66,8 +66,23 @@ h2{font-size:15px;font-weight:800;letter-spacing:.12em;color:#9fc7b6;text-transf
 """
 
 
+THEME = {"accent": "", "label": ""}  # set by track.py from TRACK_ACCENT / TRACK_LABEL
+
+
+def _css():
+    """The default look is green; TRACK_ACCENT swaps the green (and the tinted dark background)
+    for another color, so two trackers posting to one channel don't look alike."""
+    a = (THEME.get("accent") or "").lstrip("#")
+    if len(a) != 6:
+        return CSS
+    r, g, b = (int(a[i:i + 2], 16) for i in (0, 2, 4))
+    dark = lambda f: "#%02x%02x%02x" % tuple(int(12 + c * f) for c in (r, g, b))
+    return (CSS.replace("#3ddc97", "#" + a).replace("61,220,151", f"{r},{g},{b}")
+            .replace("#121a17", dark(.07)).replace("#0b0f0d", dark(.025)))
+
+
 def _page(body):
-    return f'<!doctype html><html><head><meta charset="utf-8"><style>{CSS}</style></head><body>{body}</body></html>'
+    return f'<!doctype html><html><head><meta charset="utf-8"><style>{_css()}</style></head><body>{body}</body></html>'
 
 
 def av(name, heads, size=40):
@@ -118,7 +133,7 @@ def build_board(d, heads, sh, board, emoji):
     clan = f'<span class="chip end">{e(d["clan"])}</span>' if d.get("clan") else ""
     speed_note = f'<span class="chip">bars = {e(d["win"])} average speed</span>' if d.get("win") else ""
     return _page(f'''<div class="card">
- <div class="top"><div class="tag">LEADERBOARD</div><div class="when">{e(d["date"])} · {e(d["time"])}</div></div>
+ <div class="top"><div class="tag">{e(THEME.get("label") or "LEADERBOARD")}</div><div class="when">{e(d["date"])} · {e(d["time"])}</div></div>
  <h1>{e(emoji)} {e(board)}</h1><div class="meta">{clan}{ends}{speed_note}</div>
  {"".join(rows)}
  <div class="foot"><span>Tracking the top 15 every {e(d.get("every") or "hour")}</span><span>Pets Universe · Leaderboard Tracker</span></div>
@@ -162,7 +177,7 @@ def build_analysis(d, heads):
     elif A.get("nodata"):
         secs.append(f'<div class="note">ℹ️ No {e(win)} history yet for {e(", ".join(A["nodata"]))}, so they are left out of predictions.</div>')
     return _page(f'''<div class="card">
- <div class="top"><div class="tag">ANALYSIS · LAST {e(win).upper()}</div><div class="when">{e(d["date"])} · {e(d["time"])}</div></div>
+ <div class="top"><div class="tag">{e((THEME["label"] + " · ") if THEME.get("label") else "")}ANALYSIS · LAST {e(win).upper()}</div><div class="when">{e(d["date"])} · {e(d["time"])}</div></div>
  {"".join(secs)}
  <div class="foot"><span>Speeds = {e(win)} average · no guesses</span><span>Pets Universe · Leaderboard Tracker</span></div>
 </div>''')

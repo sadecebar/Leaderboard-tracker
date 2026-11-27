@@ -22,6 +22,9 @@ URL = "https://petsuniverse.org/players"
 BOARD = os.environ.get("TRACK_BOARD", "Total Flowers")    # exact tab name on the page
 TITLE = os.environ.get("TRACK_TITLE", "Flower")           # shown as "<TITLE> leaderboard"
 EMOJI = os.environ.get("TRACK_EMOJI", "\U0001F338")
+ACCENT = os.environ.get("TRACK_ACCENT", "").strip()   # e.g. "#f43f5e": picture + embed color (empty = green)
+LABEL = os.environ.get("TRACK_LABEL", "").strip()     # e.g. "⚔️ CLAN WAR": badge on the pictures
+HEADER = os.environ.get("TRACK_HEADER", "").strip()   # e.g. "⚔️ **CLAN WAR** ⚔️": line above each post
 ME = os.environ.get("TRACK_USER", "Imnotsadece")
 TZ = ZoneInfo("Europe/Stockholm")
 DB = os.environ.get("TRACK_DB", "data/tracker.db")
@@ -878,6 +881,7 @@ def discord_message(now_utc, *args, **kw):
     # the pictures (board + analysis); the text embeds above are the fallback
     try:
         import lbcard
+        lbcard.THEME.update(accent=ACCENT, label=LABEL)
         A = d["A"]
         names = ({p["name"] for p in d["players"]} | {x for p in A["passes"] for x in (p["lo"], p["hi"])}
                  | {f[1] for f in A["final"]} | {n[1] for n in A["news"]})
@@ -892,6 +896,17 @@ def discord_message(now_utc, *args, **kw):
     except Exception as e:
         print("leaderboard cards failed, sending text:", str(e)[:150])
     return [emb1, emb2], None
+
+
+def _accent(embeds):
+    """Embeds get the tracker's own color, so each tracker's posts look different in Discord."""
+    try:
+        c = int(ACCENT.lstrip("#"), 16) if ACCENT else None
+    except ValueError:
+        c = None
+    for x in embeds if c is not None else []:
+        x["color"] = c
+    return embeds
 
 
 # ---------------------------------------------------------------- notify
@@ -914,7 +929,10 @@ def notify(msg, embed=None, png=None):
     if not WEBHOOK:
         print("[no DISCORD_WEBHOOK_URL set - not sent]")
         return False
-    payload = {"embeds": embed if isinstance(embed, list) else [embed]} if embed else {"content": msg[:1900]}
+    payload = ({"embeds": _accent(embed if isinstance(embed, list) else [embed])} if embed
+               else {"content": ((HEADER + "\n") if HEADER else "") + msg[:1800]})
+    if embed and HEADER:
+        payload["content"] = HEADER
     if png:
         data, ctype = _multipart(payload, png)
     else:

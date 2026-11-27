@@ -27,6 +27,9 @@ jobs:
       TRACK_BOARD: "Clan War #3"       # exact tab name on petsuniverse.org/players
       TRACK_TITLE: "Clan War"          # shown as "<TITLE> leaderboard"
       TRACK_EMOJI: "⚔️"
+      TRACK_ACCENT: "#f43f5e"          # picture + Discord color, so it's easy to tell apart from the other tracker
+      TRACK_LABEL: "⚔️ CLAN WAR"       # badge on the pictures
+      TRACK_HEADER: "⚔️⚔️ **CLAN WAR #3** ⚔️⚔️"   # line above each post
       TRACK_MIN_EXP: "0"               # wrong-board guard: top value must be >= 10^this (0 = off; war points are small)
       TRACK_DB: "data/war3.db"         # use a NEW file per board so histories don't mix
       TRACK_USER: "imnotsadece"

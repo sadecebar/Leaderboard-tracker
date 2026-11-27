@@ -30,11 +30,14 @@ jobs:
       TRACK_SOURCE: "board"            # "board" = read TRACK_BOARD_ID from the site API (top 50 + your place from your profile)
       TRACK_TITLE: "Breakables"        # shown as "<TITLE> leaderboard"
       TRACK_EMOJI: "🦃"
+      TRACK_ACCENT: "#f59e0b"          # picture + Discord color, so it's easy to tell apart from the other tracker
+      TRACK_LABEL: "🦃 THANKSGIVING"   # badge on the pictures
+      TRACK_HEADER: "🦃🦃 **THANKSGIVING BREAKABLES** 🦃🦃"   # line above each post
       TRACK_MIN_EXP: "0"               # wrong-board guard off: counts are small
       TRACK_DB: "data/breakables.db"   # use a NEW file per board so histories don't mix
       TRACK_USER: "imnotsadece"
       TRACK_EVERY_MIN: "60"            # report every N minutes (60 = hourly)
-      STOP_AT: ""                      # end time unknown yet: set it when the event's end is announced
+      STOP_AT: "2026-12-04T19:00:00+01:00"   # Fri 4 Dec 19:00 Stockholm: the Thanksgiving event ends
     steps:
       - uses: actions/checkout@v4
       - name: Check stop time
